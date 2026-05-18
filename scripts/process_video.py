@@ -299,8 +299,9 @@ def main():
             "clip_count": len(clips),
         }).execute()
 
-        total_posts = len(clips) * 2
-        print(f"\n✓ Done. {len(clips)} clips queued — {total_posts} posts scheduled across Instagram + TikTok.")
+        platforms = ["instagram", "tiktok", "youtube", "facebook"]
+        total_posts = len(clips) * len(platforms)
+        print(f"\n✓ Done. {len(clips)} clips queued — {total_posts} posts scheduled across {', '.join(p.capitalize() for p in platforms)}.")
 
 
 if __name__ == "__main__":
