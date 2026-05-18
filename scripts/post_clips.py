@@ -1,9 +1,9 @@
 """
-Posts the next pending clip from the queue to Instagram and TikTok via Zernio.
+Posts the next pending clip from the queue to Instagram, TikTok, and YouTube Shorts via Zernio.
 Run 3x per day via GitHub Actions (9am, 1pm, 6pm UTC).
 
 For each platform, grabs the oldest pending clip and posts it.
-Marks it as posted (or failed) and cleans up Supabase Storage when both platforms are done.
+Marks it as posted (or failed) and cleans up Supabase Storage when all platforms are done.
 """
 
 import os
@@ -15,16 +15,30 @@ from supabase import create_client
 load_dotenv(override=True)
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 ZERNIO_API_KEY = os.environ["ZERNIO_API_KEY"]
+ZERNIO_API_KEY_2 = os.environ["ZERNIO_API_KEY_2"]
 INSTAGRAM_ACCOUNT_ID = os.environ["INSTAGRAM_ACCOUNT_ID"]
 TIKTOK_ACCOUNT_ID = os.environ["TIKTOK_ACCOUNT_ID"]
+YOUTUBE_ACCOUNT_ID = os.environ["YOUTUBE_ACCOUNT_ID"]
+FACEBOOK_ACCOUNT_ID = os.environ["FACEBOOK_ACCOUNT_ID"]
 
 ZERNIO_BASE = "https://zernio.com/api/v1"
-ZERNIO_HEADERS = {
+
+ZERNIO_HEADERS_1 = {
     "Authorization": f"Bearer {ZERNIO_API_KEY}",
     "Content-Type": "application/json",
+}
+ZERNIO_HEADERS_2 = {
+    "Authorization": f"Bearer {ZERNIO_API_KEY_2}",
+    "Content-Type": "application/json",
+}
+
+PLATFORM_HEADERS = {
+    "instagram": ZERNIO_HEADERS_1,
+    "tiktok": ZERNIO_HEADERS_1,
+    "youtube": ZERNIO_HEADERS_2,
+    "facebook": ZERNIO_HEADERS_2,
 }
 
 
@@ -41,30 +55,26 @@ def get_next_clip(supabase_admin, platform):
     return result.data[0] if result.data else None
 
 
-def build_instagram_payload(clip):
-    return {
-        "content": clip["caption"],
-        "mediaItems": [{"type": "video", "url": clip["public_url"]}],
-        "platforms": [
-            {
+def build_payload(clip, platform):
+    if platform == "instagram":
+        return {
+            "content": clip["caption"],
+            "mediaItems": [{"type": "video", "url": clip["public_url"]}],
+            "platforms": [{
                 "platform": "instagram",
                 "accountId": INSTAGRAM_ACCOUNT_ID,
                 "platformSpecificData": {
                     "contentType": "reels",
                     "shareToFeed": True,
                 },
-            }
-        ],
-        "publishNow": True,
-    }
-
-
-def build_tiktok_payload(clip):
-    return {
-        "content": clip["caption"],
-        "mediaItems": [{"type": "video", "url": clip["public_url"]}],
-        "platforms": [
-            {
+            }],
+            "publishNow": True,
+        }
+    elif platform == "tiktok":
+        return {
+            "content": clip["caption"],
+            "mediaItems": [{"type": "video", "url": clip["public_url"]}],
+            "platforms": [{
                 "platform": "tiktok",
                 "accountId": TIKTOK_ACCOUNT_ID,
                 "tiktokSettings": {
@@ -75,16 +85,43 @@ def build_tiktok_payload(clip):
                     "content_preview_confirmed": True,
                     "express_consent_given": True,
                 },
-            }
-        ],
-        "publishNow": True,
-    }
+            }],
+            "publishNow": True,
+        }
+    elif platform == "youtube":
+        return {
+            "content": clip["caption"],
+            "mediaItems": [{"type": "video", "url": clip["public_url"]}],
+            "platforms": [{
+                "platform": "youtube",
+                "accountId": YOUTUBE_ACCOUNT_ID,
+                "youtubeSettings": {
+                    "title": clip.get("hook", clip["caption"][:100]),
+                    "privacyStatus": "public",
+                    "isShort": True,
+                },
+            }],
+            "publishNow": True,
+        }
+    elif platform == "facebook":
+        return {
+            "content": clip["caption"],
+            "mediaItems": [{"type": "video", "url": clip["public_url"]}],
+            "platforms": [{
+                "platform": "facebook",
+                "accountId": FACEBOOK_ACCOUNT_ID,
+                "platformSpecificData": {
+                    "contentType": "reels",
+                },
+            }],
+            "publishNow": True,
+        }
 
 
-def post_to_zernio(payload):
+def post_to_zernio(payload, platform):
     resp = requests.post(
         f"{ZERNIO_BASE}/posts",
-        headers=ZERNIO_HEADERS,
+        headers=PLATFORM_HEADERS[platform],
         json=payload,
         timeout=300,
     )
@@ -105,7 +142,7 @@ def mark_failed(supabase_admin, clip_id):
 
 
 def cleanup_storage_if_done(supabase_admin, video_id, clip_index, storage_path):
-    """Delete clip from Supabase Storage once both platforms have posted it."""
+    """Delete clip from Supabase Storage once all platforms have posted it."""
     remaining = (
         supabase_admin.table("clip_queue")
         .select("id", count="exact")
@@ -126,7 +163,7 @@ def main():
     supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     posted_any = False
 
-    for platform in ["instagram", "tiktok"]:
+    for platform in ["instagram", "tiktok", "youtube", "facebook"]:
         clip = get_next_clip(supabase_admin, platform)
 
         if not clip:
@@ -136,14 +173,9 @@ def main():
         print(f"\n{platform.upper()}: posting clip {clip['clip_index']} from video {clip['video_id']}")
         print(f"  Caption: {clip['caption'][:80]}...")
 
-        if platform == "instagram":
-            payload = build_instagram_payload(clip)
-        else:
-            payload = build_tiktok_payload(clip)
+        payload = build_payload(clip, platform)
+        status_code, response = post_to_zernio(payload, platform)
 
-        status_code, response = post_to_zernio(payload)
-
-        # Zernio returns the post object with an id on success
         post_obj = response.get("post", {})
         post_id = (
             response.get("id")
@@ -171,7 +203,6 @@ def main():
     if not posted_any:
         print("\nNo clips were posted this run.")
 
-    # Summary of remaining queue
     remaining = (
         supabase_admin.table("clip_queue")
         .select("platform", count="exact")

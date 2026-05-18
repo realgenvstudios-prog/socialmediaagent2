@@ -200,13 +200,14 @@ def upload_clip(supabase, local_path, storage_path):
     return supabase.storage.from_("clips").get_public_url(storage_path)
 
 
-def queue_clip(supabase, video_id, clip_index, storage_path, public_url, caption, platform):
+def queue_clip(supabase, video_id, clip_index, storage_path, public_url, caption, hook, platform):
     supabase.table("clip_queue").insert({
         "video_id": video_id,
         "clip_index": clip_index,
         "storage_path": storage_path,
         "public_url": public_url,
         "caption": caption,
+        "hook": hook,
         "platform": platform,
         "status": "pending",
     }).execute()
@@ -285,8 +286,8 @@ def main():
             print(f"  Uploading ({clip_mb:.1f}MB)...")
             public_url = upload_clip(supabase_admin, clip_path, storage_path)
 
-            for platform in ["instagram", "tiktok"]:
-                queue_clip(supabase_admin, args.video_id, i, storage_path, public_url, clip["caption"], platform)
+            for platform in ["instagram", "tiktok", "youtube", "facebook"]:
+                queue_clip(supabase_admin, args.video_id, i, storage_path, public_url, clip["caption"], clip.get("hook", ""), platform)
 
             print(f"  Queued: {public_url[:60]}...")
 
