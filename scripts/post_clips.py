@@ -42,6 +42,27 @@ PLATFORM_HEADERS = {
 }
 
 
+def get_failed_clips(supabase_admin, platform, max_age_hours=24):
+    """Return failed clips from the last 24h that are worth retrying."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
+    result = (
+        supabase_admin.table("clip_queue")
+        .select("*")
+        .eq("platform", platform)
+        .eq("status", "failed")
+        .gte("created_at", cutoff)
+        .order("created_at")
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def reset_to_pending(supabase_admin, clip_id):
+    supabase_admin.table("clip_queue").update({"status": "pending"}).eq("id", clip_id).execute()
+
+
 def get_next_clip(supabase_admin, platform):
     result = (
         supabase_admin.table("clip_queue")
@@ -142,16 +163,17 @@ def mark_failed(supabase_admin, clip_id):
 
 
 def cleanup_storage_if_done(supabase_admin, video_id, clip_index, storage_path):
-    """Delete clip from Supabase Storage once all platforms have posted it."""
-    remaining = (
+    """Delete clip from Supabase Storage only once every platform has posted (not just non-pending)."""
+    result = (
         supabase_admin.table("clip_queue")
-        .select("id", count="exact")
+        .select("status")
         .eq("video_id", video_id)
         .eq("clip_index", clip_index)
-        .eq("status", "pending")
         .execute()
     )
-    if remaining.count == 0:
+    statuses = {row["status"] for row in result.data}
+    # Only clean up if every row is posted — not if some are still pending or failed
+    if statuses == {"posted"}:
         try:
             supabase_admin.storage.from_("clips").remove([storage_path])
             print(f"  Deleted from storage: {storage_path}")
@@ -219,7 +241,12 @@ def main():
             print(f"  FAILED (HTTP {status_code}): {response}", file=sys.stderr)
 
     if not posted_any:
-        print("\nNo clips were posted this run.")
+        print("\nNo pending clips posted. Checking for failed clips to retry...")
+        for platform in ["instagram", "tiktok", "youtube", "facebook"]:
+            clip = get_failed_clips(supabase_admin, platform)
+            if clip:
+                print(f"  Retrying {platform} clip {clip['clip_index']} from {clip['video_id']}")
+                reset_to_pending(supabase_admin, clip["id"])
 
     remaining = (
         supabase_admin.table("clip_queue")

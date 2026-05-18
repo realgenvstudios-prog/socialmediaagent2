@@ -19,7 +19,8 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 
-def get_latest_video():
+def get_recent_long_videos(max_results=5):
+    """Return up to max_results long-form videos (>20 min) ordered by date."""
     resp = requests.get(
         "https://www.googleapis.com/youtube/v3/search",
         params={
@@ -27,23 +28,23 @@ def get_latest_video():
             "channelId": CHANNEL_ID,
             "part": "id,snippet",
             "order": "date",
-            "maxResults": 1,
+            "maxResults": max_results,
             "type": "video",
+            "videoDuration": "long",  # only videos longer than 20 minutes
         },
         timeout=10,
     )
     resp.raise_for_status()
     data = resp.json()
 
-    if not data.get("items"):
-        return None
-
-    item = data["items"][0]
-    return {
-        "video_id": item["id"]["videoId"],
-        "title": item["snippet"]["title"],
-        "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}",
-    }
+    videos = []
+    for item in data.get("items", []):
+        videos.append({
+            "video_id": item["id"]["videoId"],
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}",
+        })
+    return videos
 
 
 def is_already_processed(supabase, video_id):
@@ -59,18 +60,17 @@ def is_already_processed(supabase, video_id):
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    print("Checking for new Konnected Minds videos...")
-    video = get_latest_video()
+    print("Checking for new Konnected Minds videos (long-form only)...")
+    videos = get_recent_long_videos(max_results=5)
 
-    if not video:
-        print("No videos found on channel.")
+    if not videos:
+        print("No long-form videos found on channel.")
         return
 
-    print(f"Latest video: {video['title']} ({video['video_id']})")
+    new_videos = [v for v in videos if not is_already_processed(supabase, v["video_id"])]
 
-    if is_already_processed(supabase, video["video_id"]):
-        print("Already processed. Nothing to do.")
-        # Check if we still have clips queued
+    if not new_videos:
+        print(f"All {len(videos)} recent videos already processed.")
         pending = (
             supabase.table("clip_queue")
             .select("id", count="exact")
@@ -80,23 +80,24 @@ def main():
         print(f"Clips still in queue: {pending.count}")
         return
 
-    print(f"New video found! Starting processing pipeline...")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/process_video.py",
-            "--video_id", video["video_id"],
-            "--url", video["url"],
-            "--title", video["title"],
-        ],
-        check=True,
-    )
+    print(f"{len(new_videos)} new video(s) found. Processing...")
 
-    if result.returncode == 0:
-        print("Processing complete.")
-    else:
-        print("Processing failed.", file=sys.stderr)
-        sys.exit(1)
+    for video in new_videos:
+        print(f"\nProcessing: {video['title']} ({video['video_id']})")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/process_video.py",
+                "--video_id", video["video_id"],
+                "--url", video["url"],
+                "--title", video["title"],
+            ],
+            check=False,
+        )
+        if result.returncode == 0:
+            print(f"  Done: {video['video_id']}")
+        else:
+            print(f"  FAILED: {video['video_id']}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -127,7 +127,7 @@ def select_clips(anthropic_client, segments, video_title):
     if len(transcript_text) > 80000:
         transcript_text = transcript_text[:80000] + "\n...[truncated]"
 
-    prompt = f"""You are a viral short-form content strategist. Your job is to find the best moments in a podcast transcript to clip for Instagram Reels and TikTok.
+    prompt = f"""You are a viral short-form content strategist. Your job is to find the best moments in a podcast transcript to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
 
 Video title: {video_title}
 
@@ -140,13 +140,24 @@ Identify exactly 6 clips that will perform well as short-form vertical video. Ea
 - Be between 30 and 90 seconds long
 - Feel urgent, surprising, emotional, or deeply insightful
 
+For each clip write platform-specific captions:
+- instagram: 2-3 punchy sentences + 5-8 relevant hashtags
+- tiktok: 1-2 casual sentences + 3-5 hashtags (conversational tone, shorter)
+- youtube: a compelling title (max 80 chars) as the caption — no hashtags
+- facebook: 2-3 sentences written for a Facebook audience (slightly more descriptive, no hashtags)
+
 Return ONLY a valid JSON array with no other text, markdown, or explanation:
 [
   {{
     "start_seconds": 125,
     "end_seconds": 178,
     "hook": "The opening sentence that grabs attention",
-    "caption": "Engaging post caption (2-3 sentences max) with 3-5 relevant hashtags"
+    "captions": {{
+      "instagram": "Caption with hashtags for Instagram Reels",
+      "tiktok": "Short casual caption for TikTok",
+      "youtube": "Compelling YouTube Shorts title under 80 chars",
+      "facebook": "Slightly longer descriptive caption for Facebook"
+    }}
   }}
 ]"""
 
@@ -164,7 +175,15 @@ Return ONLY a valid JSON array with no other text, markdown, or explanation:
     raw = raw.strip()
 
     clips = json.loads(raw)
-    return [c for c in clips if 25 <= (c["end_seconds"] - c["start_seconds"]) <= 95]
+    valid = []
+    for c in clips:
+        if not (25 <= (c["end_seconds"] - c["start_seconds"]) <= 95):
+            continue
+        # Normalise: if Claude returned old single-caption format, promote it
+        if "caption" in c and "captions" not in c:
+            c["captions"] = {p: c["caption"] for p in ["instagram", "tiktok", "youtube", "facebook"]}
+        valid.append(c)
+    return valid
 
 
 # ── Video processing ───────────────────────────────────────────────────────────
@@ -286,8 +305,10 @@ def main():
             print(f"  Uploading ({clip_mb:.1f}MB)...")
             public_url = upload_clip(supabase_admin, clip_path, storage_path)
 
+            captions = clip.get("captions", {})
             for platform in ["instagram", "tiktok", "youtube", "facebook"]:
-                queue_clip(supabase_admin, args.video_id, i, storage_path, public_url, clip["caption"], clip.get("hook", ""), platform)
+                caption = captions.get(platform) or clip.get("caption", "")
+                queue_clip(supabase_admin, args.video_id, i, storage_path, public_url, caption, clip.get("hook", ""), platform)
 
             print(f"  Queued: {public_url[:60]}...")
 
