@@ -116,7 +116,7 @@ def transcribe(audio_path):
 # ── Claude clip selection ──────────────────────────────────────────────────────
 
 def select_clips(anthropic_client, segments, video_title):
-    """Ask Claude to pick 6 viral moments from the transcript."""
+    """Ask Claude to pick 10-12 viral moments from the transcript."""
     lines = []
     for seg in segments:
         sm, ss = int(seg["start"] // 60), int(seg["start"] % 60)
@@ -127,43 +127,74 @@ def select_clips(anthropic_client, segments, video_title):
     if len(transcript_text) > 80000:
         transcript_text = transcript_text[:80000] + "\n...[truncated]"
 
-    prompt = f"""You are a viral short-form content strategist. Your job is to find the best moments in a podcast transcript to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
+    prompt = f"""You are an expert viral short-form content strategist who deeply understands what makes people stop scrolling and watch a clip all the way through.
+
+Your job: find the 10 to 12 best moments in this podcast transcript to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
 
 Video title: {video_title}
 
 Transcript (with timestamps):
 {transcript_text}
 
-Identify exactly 6 clips that will perform well as short-form vertical video. Each clip must:
-- Open with a strong hook that stops the scroll in the first 3 seconds
-- Contain one complete, self-contained idea or story
-- Be between 30 and 90 seconds long
-- Feel urgent, surprising, emotional, or deeply insightful
+━━━ CLIP SELECTION RULES ━━━
 
-For each clip write platform-specific captions:
-- instagram: 2-3 punchy sentences + 5-8 relevant hashtags
-- tiktok: 1-2 casual sentences + 3-5 hashtags (conversational tone, shorter)
-- youtube: a compelling title (max 80 chars) as the caption — no hashtags
-- facebook: 2-3 sentences written for a Facebook audience (slightly more descriptive, no hashtags)
+LENGTH — Target 45 to 65 seconds per clip. This is the proven sweet spot across all 4 platforms for completion rate. Never go below 30 seconds (too thin) or above 90 seconds (completion rate drops off sharply). Tighter is better — cut any dead air from the start or end.
 
-Return ONLY a valid JSON array with no other text, markdown, or explanation:
+THE HOOK (first 3 seconds) — This is the single most important part. The algorithm decides whether to push a clip based on how many people watch past 3 seconds. A good hook is one of:
+  • A shocking or counterintuitive statement ("I made $0 from that viral video")
+  • A question that creates instant curiosity ("Why did she never get paid?")
+  • A cliffhanger opener ("What happened next changed everything")
+  • A bold claim or confession ("I was wrong about this for 10 years")
+  Never start a clip mid-thought, with filler words ("So...", "Um...", "Like I said"), or with slow context-setting.
+
+CONTENT — Each clip must contain ONE complete self-contained idea, story, or revelation. No clip should feel like it was cut out of context. Prioritise moments that are:
+  • Emotionally charged (anger, surprise, inspiration, heartbreak)
+  • Story-driven with a clear arc (setup → tension → payoff)
+  • Controversial or opinion-driven (sparks comments and shares)
+  • Deeply relatable or universally human
+  • Revealing something people didn't know or expect
+
+ALGORITHM SIGNALS — Pick moments likely to drive:
+  • Replays (a punchline, stat, or twist people want to hear again)
+  • Shares (something so good people want to send it to a friend)
+  • Saves (practical insight or advice people want to come back to)
+  • Comments (a take that people agree or disagree with strongly)
+
+VARIETY — Spread clips across the full video. Do not cluster them all in one section. Each clip must cover a different topic or story beat — no overlapping content.
+
+━━━ CAPTION RULES ━━━
+
+Write platform-specific captions for each clip:
+
+instagram: 2–3 punchy sentences that expand on the hook and tease what they'll learn. End with 5–8 relevant hashtags on a new line. Tone: direct, energetic, slightly dramatic.
+
+tiktok: 1–2 very casual sentences. Sounds like a person talking, not a brand. 3–5 hashtags maximum. Tone: conversational, raw, unpolished.
+
+youtube: A standalone title that works as a YouTube Shorts title (max 80 characters). Must create curiosity or promise a specific payoff. No hashtags. Capitalise like a headline.
+
+facebook: 2–3 sentences written for a slightly older, more conversational Facebook audience. More context than TikTok, less hype than Instagram. No hashtags.
+
+━━━ OUTPUT FORMAT ━━━
+
+Return ONLY a valid JSON array. No markdown, no explanation, no intro text — just the raw JSON starting with [ and ending with ].
+
 [
   {{
     "start_seconds": 125,
-    "end_seconds": 178,
-    "hook": "The opening sentence that grabs attention",
+    "end_seconds": 187,
+    "hook": "The exact first sentence spoken that opens this clip",
     "captions": {{
-      "instagram": "Caption with hashtags for Instagram Reels",
-      "tiktok": "Short casual caption for TikTok",
-      "youtube": "Compelling YouTube Shorts title under 80 chars",
-      "facebook": "Slightly longer descriptive caption for Facebook"
+      "instagram": "Caption text here.\\n\\n#hashtag1 #hashtag2 #hashtag3 #hashtag4 #hashtag5",
+      "tiktok": "casual caption here #hashtag1 #hashtag2 #hashtag3",
+      "youtube": "YouTube Shorts Title That Creates Curiosity",
+      "facebook": "Facebook caption here that gives a bit more context."
     }}
   }}
 ]"""
 
     msg = anthropic_client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=2000,
+        max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -177,9 +208,9 @@ Return ONLY a valid JSON array with no other text, markdown, or explanation:
     clips = json.loads(raw)
     valid = []
     for c in clips:
-        if not (25 <= (c["end_seconds"] - c["start_seconds"]) <= 95):
+        duration = c["end_seconds"] - c["start_seconds"]
+        if not (28 <= duration <= 95):
             continue
-        # Normalise: if Claude returned old single-caption format, promote it
         if "caption" in c and "captions" not in c:
             c["captions"] = {p: c["caption"] for p in ["instagram", "tiktok", "youtube", "facebook"]}
         valid.append(c)
