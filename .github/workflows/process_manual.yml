@@ -1,14 +1,22 @@
-name: Post Clips
+name: Process Manual Video
 
 on:
-  schedule:
-    - cron: '0 * * * *'  # every hour — post_clips.py checks the schedule from Supabase
   workflow_dispatch:
+    inputs:
+      video_id:
+        description: YouTube video ID
+        required: true
+      video_url:
+        description: Full YouTube URL
+        required: true
+      video_title:
+        description: Video title
+        required: true
 
 jobs:
-  post:
+  process:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
@@ -17,17 +25,25 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y ffmpeg
+
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Post next clips
-        run: python scripts/post_clips.py
+      - name: Process video
+        run: |
+          python scripts/process_video.py \
+            --video_id "${{ github.event.inputs.video_id }}" \
+            --url "${{ github.event.inputs.video_url }}" \
+            --title "${{ github.event.inputs.video_title }}"
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
-          ZERNIO_API_KEY_2: ${{ secrets.ZERNIO_API_KEY_2 }}
           INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
           TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
           YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
