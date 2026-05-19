@@ -260,65 +260,70 @@ def words_for_clip(all_words, clip_start_s, clip_end_s):
     return result
 
 
-def _ass_time(s):
-    """Convert float seconds to ASS timestamp format H:MM:SS.cc"""
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = s % 60
-    cs = int(round((sec % 1) * 100))
-    return f"{h}:{m:02d}:{int(sec):02d}.{cs:02d}"
-
-
-def generate_ass(words, output_path, chunk_size=3):
+def burn_subtitles(clip_path, words, output_path, clip_idx, tmpdir, chunk_size=3):
     """
-    Write an ASS subtitle file grouping words into chunks of chunk_size.
+    Burn subtitles using FFmpeg drawtext filter — works without libass.
+    Each 3-word chunk is written to a temp textfile to avoid escaping issues
+    with apostrophes, colons, and other special characters in speech.
     Style: bold white uppercase text, thick black outline, centred lower-third.
     """
-    header = (
-        "[Script Info]\n"
-        "ScriptType: v4.00+\n"
-        "PlayResX: 1080\n"
-        "PlayResY: 1920\n"
-        "WrapStyle: 0\n"
-        "ScaledBorderAndShadow: yes\n\n"
-        "[V4+ Styles]\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
-        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
-        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        # White text, black outline (6px), no background box, bold, bottom-center, 350px from bottom
-        "Style: Default,Arial,160,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,"
-        "1,0,0,0,100,100,0,0,1,6,0,2,80,80,350,1\n\n"
-        "[Events]\n"
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-    )
+    font_candidates = [
+        "/System/Library/Fonts/Helvetica.ttc",                           # macOS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",          # Ubuntu
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    font = next((p for p in font_candidates if os.path.exists(p)), None)
+
     chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
-    dialogues = []
-    for chunk in chunks:
+    filters = []
+    text_files = []
+
+    for j, chunk in enumerate(chunks):
         if not chunk:
             continue
-        start = _ass_time(chunk[0]["start"])
-        end = _ass_time(chunk[-1]["end"])
+        start = chunk[0]["start"]
+        end = chunk[-1]["end"]
         text = " ".join(w["word"] for w in chunk).upper()
-        dialogues.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(header + "\n".join(dialogues))
+        # Write to file — avoids all FFmpeg filter escaping headaches
+        tf = os.path.join(tmpdir, f"sub_{clip_idx}_{j}.txt")
+        with open(tf, "w", encoding="utf-8") as f:
+            f.write(text)
+        text_files.append(tf)
 
+        font_part = f"fontfile={font}:" if font else ""
+        filters.append(
+            f"drawtext={font_part}"
+            f"textfile={tf}:"
+            f"enable='between(t,{start:.3f},{end:.3f})':"
+            f"fontsize=100:fontcolor=white:borderw=6:bordercolor=black:"
+            f"x=(w-text_w)/2:y=h-text_h-200"
+        )
 
-def burn_subtitles(clip_path, ass_path, output_path):
-    """Burn ASS subtitles into the clip. Audio is copied, only video is re-encoded."""
-    subprocess.run(
+    if not filters:
+        return
+
+    result = subprocess.run(
         [
-            "ffmpeg",
-            "-i", clip_path,
-            "-vf", f"ass={ass_path}",
+            "ffmpeg", "-i", clip_path,
+            "-vf", ",".join(filters),
             "-c:v", "libx264", "-crf", "23", "-preset", "fast",
             "-c:a", "copy",
             output_path, "-y",
         ],
-        check=True,
         capture_output=True,
     )
+
+    for tf in text_files:
+        try:
+            os.remove(tf)
+        except OSError:
+            pass
+
+    if result.returncode != 0:
+        err = result.stderr.decode(errors="replace")[-600:]
+        raise RuntimeError(f"FFmpeg drawtext failed (exit {result.returncode}): {err}")
 
 
 def upload_clip(supabase, local_path, storage_path):
@@ -426,13 +431,14 @@ def main():
             if words:
                 clip_words = words_for_clip(words, start_s, end_s)
                 if clip_words:
-                    ass_path = os.path.join(tmpdir, f"clip_{i}.ass")
                     subtitled_path = os.path.join(tmpdir, f"{args.video_id}_clip_{i}_sub.mp4")
-                    generate_ass(clip_words, ass_path)
                     print(f"  Burning subtitles ({len(clip_words)} words)...")
-                    burn_subtitles(clip_path, ass_path, subtitled_path)
-                    os.remove(clip_path)
-                    clip_path = subtitled_path
+                    try:
+                        burn_subtitles(clip_path, clip_words, subtitled_path, i, tmpdir)
+                        os.remove(clip_path)
+                        clip_path = subtitled_path
+                    except Exception as e:
+                        print(f"  Subtitle burn failed — uploading without subtitles. ({e})")
 
             clip_mb = os.path.getsize(clip_path) / 1024 / 1024
             print(f"  Uploading ({clip_mb:.1f}MB)...")
