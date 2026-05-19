@@ -8,8 +8,8 @@ Efficient two-pass download strategy:
 Steps:
   1. Download audio only
   2. Transcribe locally with faster-whisper
-  3. Claude reads transcript and picks 6 viral clip moments (with timestamps)
-  4. For each clip: download just that section at 720p → crop 9:16 → upload → queue
+  3. Claude reads transcript and picks 10-12 viral clip moments (with timestamps)
+  4. For each clip: download just that section at 720p → crop 9:16 → burn subtitles → upload → queue
   5. Mark video as processed
 
 Usage:
@@ -100,17 +100,20 @@ def download_section(url, start_s, end_s, output_path):
 # ── Transcription ──────────────────────────────────────────────────────────────
 
 def transcribe(audio_path):
-    """Transcribe audio locally with faster-whisper. No API key, no size limit."""
+    """Transcribe audio locally with faster-whisper. Returns (segments, words) with word-level timestamps."""
     print(f"  Loading Whisper {WHISPER_MODEL} model...")
     model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
     print("  Transcribing (takes a few minutes for long audio)...")
-    raw_segments, info = model.transcribe(audio_path, beam_size=5)
-    segments = [
-        {"start": s.start, "end": s.end, "text": s.text.strip()}
-        for s in raw_segments
-    ]
+    raw_segments, info = model.transcribe(audio_path, beam_size=5, word_timestamps=True)
+    segments = []
+    words = []
+    for s in raw_segments:
+        segments.append({"start": s.start, "end": s.end, "text": s.text.strip()})
+        if s.words:
+            for w in s.words:
+                words.append({"start": w.start, "end": w.end, "word": w.word})
     print(f"  Language: {info.language} ({info.language_probability:.0%} confidence)")
-    return segments
+    return segments, words
 
 
 # ── Claude clip selection ──────────────────────────────────────────────────────
@@ -241,6 +244,83 @@ def cut_clip(section_path, offset_seconds, duration, output_path):
     )
 
 
+# ── Subtitles ──────────────────────────────────────────────────────────────────
+
+def words_for_clip(all_words, clip_start_s, clip_end_s):
+    """Filter words that fall within the clip's time range and rebase to clip-relative seconds."""
+    result = []
+    for w in all_words:
+        if w["end"] <= clip_start_s or w["start"] >= clip_end_s:
+            continue
+        result.append({
+            "word": w["word"].strip(),
+            "start": max(0.0, w["start"] - clip_start_s),
+            "end": min(float(clip_end_s - clip_start_s), w["end"] - clip_start_s),
+        })
+    return result
+
+
+def _ass_time(s):
+    """Convert float seconds to ASS timestamp format H:MM:SS.cc"""
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s % 60
+    cs = int(round((sec % 1) * 100))
+    return f"{h}:{m:02d}:{int(sec):02d}.{cs:02d}"
+
+
+def generate_ass(words, output_path, chunk_size=3):
+    """
+    Write an ASS subtitle file grouping words into chunks of chunk_size.
+    Style: bold white uppercase text, thick black outline, centred lower-third.
+    """
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        # White text, black outline (6px), no background box, bold, bottom-center, 350px from bottom
+        "Style: Default,Arial,160,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,"
+        "1,0,0,0,100,100,0,0,1,6,0,2,80,80,350,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
+    dialogues = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        start = _ass_time(chunk[0]["start"])
+        end = _ass_time(chunk[-1]["end"])
+        text = " ".join(w["word"] for w in chunk).upper()
+        dialogues.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(header + "\n".join(dialogues))
+
+
+def burn_subtitles(clip_path, ass_path, output_path):
+    """Burn ASS subtitles into the clip. Audio is copied, only video is re-encoded."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-i", clip_path,
+            "-vf", f"ass={ass_path}",
+            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+            "-c:a", "copy",
+            output_path, "-y",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def upload_clip(supabase, local_path, storage_path):
     """Upload to Supabase Storage public bucket, return public URL."""
     with open(local_path, "rb") as f:
@@ -285,23 +365,31 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
 
         # ── PASS 1: Audio → Transcript ─────────────────────────────────────────
+        segments = None
+        words = []
+
         if os.path.exists(transcript_cache):
-            print(f"\n[CACHED] Loading transcript from disk — skipping download + transcription")
             with open(transcript_cache) as f:
-                segments = json.load(f)
-            print(f"  {len(segments)} segments loaded")
-        else:
+                cached = json.load(f)
+            if isinstance(cached, dict) and "words" in cached:
+                segments = cached["segments"]
+                words = cached["words"]
+                print(f"\n[CACHED] Transcript loaded — {len(segments)} segments, {len(words)} words")
+            else:
+                print(f"\n[CACHE] Old format (no word timestamps) — re-transcribing")
+
+        if segments is None:
             print(f"\n[1/2 downloads] Audio only from: {args.url}")
             audio_path = download_audio_only(args.url, tmpdir)
             size_mb = os.path.getsize(audio_path) / 1024 / 1024
             print(f"  Downloaded audio: {size_mb:.1f}MB")
 
             print("[Transcribing]")
-            segments = transcribe(audio_path)
-            print(f"  {len(segments)} transcript segments")
+            segments, words = transcribe(audio_path)
+            print(f"  {len(segments)} transcript segments, {len(words)} words")
 
             with open(transcript_cache, "w") as f:
-                json.dump(segments, f)
+                json.dump({"segments": segments, "words": words}, f)
             print(f"  Transcript cached to {transcript_cache}")
 
         # ── Claude picks clips ─────────────────────────────────────────────────
@@ -334,6 +422,17 @@ def main():
             print(f"  Cutting and cropping to 9:16...")
             cut_clip(section_path, offset, duration, clip_path)
             os.remove(section_path)  # free space immediately
+
+            if words:
+                clip_words = words_for_clip(words, start_s, end_s)
+                if clip_words:
+                    ass_path = os.path.join(tmpdir, f"clip_{i}.ass")
+                    subtitled_path = os.path.join(tmpdir, f"{args.video_id}_clip_{i}_sub.mp4")
+                    generate_ass(clip_words, ass_path)
+                    print(f"  Burning subtitles ({len(clip_words)} words)...")
+                    burn_subtitles(clip_path, ass_path, subtitled_path)
+                    os.remove(clip_path)
+                    clip_path = subtitled_path
 
             clip_mb = os.path.getsize(clip_path) / 1024 / 1024
             print(f"  Uploading ({clip_mb:.1f}MB)...")
