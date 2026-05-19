@@ -127,40 +127,43 @@ def select_clips(anthropic_client, segments, video_title):
     if len(transcript_text) > 80000:
         transcript_text = transcript_text[:80000] + "\n...[truncated]"
 
-    prompt = f"""You are an expert viral short-form content strategist who deeply understands what makes people stop scrolling and watch a clip all the way through.
+    prompt = f"""You are an expert viral short-form content strategist who deeply understands what makes people stop scrolling and watch a video clip all the way through to completion.
 
-Your job: find the 10 to 12 best moments in this podcast transcript to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
+Your job: analyze the provided timestamped podcast transcript and identify the 10 to 12 best, most high-impact moments to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
 
 Video title: {video_title}
 
 Transcript (with timestamps):
+Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the spoken text.
 {transcript_text}
 
 ━━━ CLIP SELECTION RULES ━━━
 
-LENGTH — Target 45 to 65 seconds per clip. This is the proven sweet spot across all 4 platforms for completion rate. Never go below 30 seconds (too thin) or above 90 seconds (completion rate drops off sharply). Tighter is better — cut any dead air from the start or end.
+1. CHRONOLOGICAL SYSTEMATIC REVIEW — Read through the entire transcript from start to finish. Do not ignore the middle sections. Distribute your selections evenly across the entire runtime. Do not cluster clips in a single high-energy segment.
 
-THE HOOK (first 3 seconds) — This is the single most important part. The algorithm decides whether to push a clip based on how many people watch past 3 seconds. A good hook is one of:
+2. TARGET LENGTH — Target 45 to 65 seconds per clip. This is the proven sweet spot for completion rate across all 4 platforms. Never go below 30 seconds or above 90 seconds. Tighter is better. The clip must start precisely on the opening word of the hook and end the moment the idea concludes — do not trail off into the next topic or filler.
+
+3. THE HOOK (first 3 seconds) — This is the single most important part. The algorithm decides whether to push a clip based on how many people watch past 3 seconds. A good hook is one of:
   • A shocking or counterintuitive statement ("I made $0 from that viral video")
   • A question that creates instant curiosity ("Why did she never get paid?")
   • A cliffhanger opener ("What happened next changed everything")
   • A bold claim or confession ("I was wrong about this for 10 years")
   Never start a clip mid-thought, with filler words ("So...", "Um...", "Like I said"), or with slow context-setting.
 
-CONTENT — Each clip must contain ONE complete self-contained idea, story, or revelation. No clip should feel like it was cut out of context. Prioritise moments that are:
+4. CONTENT COHESION — Each clip must contain ONE complete self-contained idea, story, or revelation. A viewer who has never heard of this podcast must instantly understand the context. Prioritise moments that are:
   • Emotionally charged (anger, surprise, inspiration, heartbreak)
   • Story-driven with a clear arc (setup → tension → payoff)
   • Controversial or opinion-driven (sparks comments and shares)
   • Deeply relatable or universally human
   • Revealing something people didn't know or expect
 
-ALGORITHM SIGNALS — Pick moments likely to drive:
+5. ALGORITHM SIGNALS — Pick moments mathematically likely to drive:
   • Replays (a punchline, stat, or twist people want to hear again)
   • Shares (something so good people want to send it to a friend)
   • Saves (practical insight or advice people want to come back to)
   • Comments (a take that people agree or disagree with strongly)
 
-VARIETY — Spread clips across the full video. Do not cluster them all in one section. Each clip must cover a different topic or story beat — no overlapping content.
+6. TIMESTAMP CONVERSION — Each transcript line shows [MM:SS-MM:SS] format. Convert the start time of your chosen clip to raw integer seconds for start_seconds, and the end time to raw integer seconds for end_seconds. Example: a clip starting at 02:05 and ending at 03:07 becomes start_seconds: 125, end_seconds: 187.
 
 ━━━ CAPTION RULES ━━━
 
@@ -176,7 +179,7 @@ facebook: 2–3 sentences written for a slightly older, more conversational Face
 
 ━━━ OUTPUT FORMAT ━━━
 
-Return ONLY a valid JSON array. No markdown, no explanation, no intro text — just the raw JSON starting with [ and ending with ].
+CRITICAL: Output ONLY the raw JSON array. Do not include any introductory sentences, conversational text, markdown code fences, or concluding remarks. The response must start with [ and end with ] and be 100% pure parseable JSON.
 
 [
   {{
@@ -194,16 +197,16 @@ Return ONLY a valid JSON array. No markdown, no explanation, no intro text — j
 
     msg = anthropic_client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4000,
+        max_tokens=6000,
         messages=[{"role": "user", "content": prompt}],
     )
 
     raw = msg.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
+    # Robust extraction: find the outermost JSON array regardless of any surrounding text
+    start_idx = raw.find("[")
+    end_idx = raw.rfind("]")
+    if start_idx != -1 and end_idx != -1:
+        raw = raw[start_idx:end_idx + 1]
 
     clips = json.loads(raw)
     valid = []
