@@ -32,6 +32,8 @@ PLATFORM_KEY = {
 }
 
 
+SYNCING_STATUS = (202,)  # Zernio returns 202 while platform analytics are still syncing
+
 def fetch_analytics(zernio_post_id, platform):
     resp = requests.get(
         f"{ZERNIO_BASE}/analytics",
@@ -39,10 +41,12 @@ def fetch_analytics(zernio_post_id, platform):
         params={"postId": zernio_post_id},
         timeout=30,
     )
-    if resp.status_code != 200:
-        print(f"    Zernio {resp.status_code} for {platform} post {zernio_post_id}: {resp.text[:120]}")
-        return None
-    return resp.json()
+    if resp.status_code == 200:
+        return resp.json()
+    if resp.status_code in SYNCING_STATUS:
+        return "syncing"  # not an error — platform hasn't released data yet
+    print(f"    Zernio {resp.status_code} for {platform} post {zernio_post_id}: {resp.text[:120]}")
+    return None
 
 
 def extract_metrics(data):
@@ -108,6 +112,11 @@ def main():
             continue
 
         data = fetch_analytics(clip["zernio_post_id"], clip["platform"])
+
+        if data == "syncing":
+            skipped += 1
+            continue  # analytics not ready yet — not an error
+
         metrics = extract_metrics(data)
 
         if not metrics:
