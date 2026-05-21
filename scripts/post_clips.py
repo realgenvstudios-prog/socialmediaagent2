@@ -181,6 +181,14 @@ def cleanup_storage_if_done(supabase_admin, video_id, clip_index, storage_path):
             print(f"  Storage cleanup skipped: {e}")
 
 
+def is_paused(supabase_admin):
+    """Return True if posting has been manually paused from the dashboard."""
+    result = supabase_admin.table("settings").select("value").eq("key", "paused").execute()
+    if not result.data:
+        return False
+    return bool(result.data[0]["value"].get("paused", False))
+
+
 def is_posting_time(supabase_admin):
     """Check Supabase settings table to see if the current UTC hour should post."""
     from datetime import datetime, timezone
@@ -194,9 +202,19 @@ def is_posting_time(supabase_admin):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true", help="Post immediately, bypassing schedule check")
+    args = parser.parse_args()
+
     supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-    if not is_posting_time(supabase_admin):
+    # Pause check always runs — not bypassed by --force
+    if is_paused(supabase_admin):
+        print("Posting is paused from the dashboard. Skipping.")
+        return
+
+    if not args.force and not is_posting_time(supabase_admin):
         from datetime import datetime, timezone
         print(f"Not a scheduled posting time ({datetime.now(timezone.utc).strftime('%H:00')} UTC). Skipping.")
         return
