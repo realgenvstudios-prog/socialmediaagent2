@@ -2,8 +2,8 @@ name: Post Clips
 
 on:
   schedule:
-    - cron: '0 * * * *'  # every hour — post_clips.py checks the schedule from Supabase
-  workflow_dispatch:
+    - cron: '0 9,13,18 * * *'  # 9am, 1pm, 6pm UTC — matches post_clips.py schedule
+  workflow_dispatch:             # manual trigger from GitHub UI
 
 jobs:
   post:
@@ -18,10 +18,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install requests python-dotenv supabase
 
       - name: Post next clips
-        run: python scripts/post_clips.py
+        run: python scripts/post_clips.py --force
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

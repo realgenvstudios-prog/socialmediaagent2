@@ -1,22 +1,22 @@
-name: Process Manual Video
+name: Process Video (Manual)
 
 on:
   workflow_dispatch:
     inputs:
       video_id:
-        description: YouTube video ID
+        description: 'YouTube video ID (e.g. xwLrHUwGtJM)'
         required: true
       video_url:
-        description: Full YouTube URL
+        description: 'Full YouTube URL'
         required: true
       video_title:
-        description: Video title
+        description: 'Video title (helps Claude pick better clips)'
         required: true
 
 jobs:
   process:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360  # 6 hours — enough for any podcast
 
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +25,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Node.js (required by yt-dlp for n-challenge solver)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install system dependencies
-        run: sudo apt-get install -y ffmpeg
+        run: sudo apt-get install -y ffmpeg fonts-dejavu
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
@@ -44,6 +49,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+          ZERNIO_API_KEY_2: ${{ secrets.ZERNIO_API_KEY_2 }}
           INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
           TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
           YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}

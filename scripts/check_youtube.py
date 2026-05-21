@@ -58,6 +58,12 @@ def is_already_processed(supabase, video_id):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check-only", action="store_true",
+                        help="Only detect new videos — do not process. Use this on CI.")
+    args = parser.parse_args()
+
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     print("Checking for new Konnected Minds videos (long-form only)...")
@@ -80,8 +86,18 @@ def main():
         print(f"Clips still in queue: {pending.count}")
         return
 
-    print(f"{len(new_videos)} new video(s) found. Processing...")
+    print(f"{len(new_videos)} new video(s) found:")
+    for video in new_videos:
+        print(f"  • {video['title']}")
+        print(f"    ID:  {video['video_id']}")
+        print(f"    URL: {video['url']}")
 
+    if args.check_only:
+        print("\n[check-only mode] Run process_video.py on your Mac or trigger the")
+        print("'Process Video (Manual)' GitHub Actions workflow to process these videos.")
+        return
+
+    print(f"\nProcessing {len(new_videos)} video(s)...")
     for video in new_videos:
         print(f"\nProcessing: {video['title']} ({video['video_id']})")
         result = subprocess.run(
