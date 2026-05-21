@@ -39,10 +39,13 @@ jobs:
       - name: Process video
         run: |
           python scripts/process_video.py \
-            --video_id "${{ github.event.inputs.video_id }}" \
-            --url "${{ github.event.inputs.video_url }}" \
-            --title "${{ github.event.inputs.video_title }}"
+            --video_id "$INPUT_VIDEO_ID" \
+            --url "$INPUT_VIDEO_URL" \
+            --title "$INPUT_VIDEO_TITLE"
         env:
+          INPUT_VIDEO_ID: ${{ github.event.inputs.video_id }}
+          INPUT_VIDEO_URL: ${{ github.event.inputs.video_url }}
+          INPUT_VIDEO_TITLE: ${{ github.event.inputs.video_title }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
