@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get install -y ffmpeg fonts-dejavu
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt && pip install "Pillow>=10.0.0"
 
       - name: Write YouTube cookies
         env:

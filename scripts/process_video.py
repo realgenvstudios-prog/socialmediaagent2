@@ -285,8 +285,6 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     paste subtitles with Pillow, then encode exactly once. Eliminates generational
     quality loss from double-encoding.
     """
-    from PIL import Image, ImageDraw, ImageFont
-
     W, H = 720, 1280
     crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280"
 
@@ -323,6 +321,7 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     ], check=True, capture_output=True)
 
     # ── Step 2: Pre-render subtitle images ────────────────────────────────────
+    from PIL import Image, ImageDraw, ImageFont
     font_size = max(60, H // 14)
     font_candidates = [
         "/Library/Fonts/SF-Pro.ttf",
