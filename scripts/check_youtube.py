@@ -1,12 +1,12 @@
 """
 Checks the Konnected Minds YouTube channel for new videos.
-If a new video is found that hasn't been processed yet, triggers process_video.py.
-Run hourly via GitHub Actions or locally.
+If a new long-form video is found that hasn't been processed yet,
+triggers the process_manual.yml GitHub Actions workflow automatically.
+Run hourly via GitHub Actions.
 """
 
 import os
 import sys
-import subprocess
 import requests
 from dotenv import load_dotenv
 from supabase import create_client
@@ -17,6 +17,9 @@ YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER")
+GITHUB_REPO  = os.environ.get("GITHUB_REPO")
 
 
 def get_recent_long_videos(max_results=5):
@@ -57,13 +60,37 @@ def is_already_processed(supabase, video_id):
     return len(result.data) > 0
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check-only", action="store_true",
-                        help="Only detect new videos — do not process. Use this on CI.")
-    args = parser.parse_args()
+def trigger_workflow(video):
+    """Dispatch process_manual.yml for this video via the GitHub API."""
+    if not all([GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO]):
+        print("  GitHub credentials not set — cannot auto-trigger workflow.")
+        return False
 
+    resp = requests.post(
+        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/process_manual.yml/dispatches",
+        headers={
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        },
+        json={
+            "ref": "main",
+            "inputs": {
+                "video_id":    video["video_id"],
+                "video_url":   video["url"],
+                "video_title": video["title"],
+            },
+        },
+        timeout=15,
+    )
+    if resp.status_code == 204:
+        print(f"  Workflow triggered for: {video['title']}")
+        return True
+    else:
+        print(f"  Failed to trigger workflow: {resp.status_code} {resp.text[:120]}")
+        return False
+
+
+def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     print("Checking for new Konnected Minds videos (long-form only)...")
@@ -88,32 +115,17 @@ def main():
 
     print(f"{len(new_videos)} new video(s) found:")
     for video in new_videos:
-        print(f"  • {video['title']}")
-        print(f"    ID:  {video['video_id']}")
-        print(f"    URL: {video['url']}")
+        print(f"  • {video['title']} ({video['video_id']})")
 
-    if args.check_only:
-        print("\n[check-only mode] Run process_video.py on your Mac or trigger the")
-        print("'Process Video (Manual)' GitHub Actions workflow to process these videos.")
-        return
-
-    print(f"\nProcessing {len(new_videos)} video(s)...")
+    print()
+    triggered = 0
     for video in new_videos:
-        print(f"\nProcessing: {video['title']} ({video['video_id']})")
-        result = subprocess.run(
-            [
-                sys.executable,
-                "scripts/process_video.py",
-                "--video_id", video["video_id"],
-                "--url", video["url"],
-                "--title", video["title"],
-            ],
-            check=False,
-        )
-        if result.returncode == 0:
-            print(f"  Done: {video['video_id']}")
-        else:
-            print(f"  FAILED: {video['video_id']}", file=sys.stderr)
+        if trigger_workflow(video):
+            triggered += 1
+
+    print(f"\nTriggered processing for {triggered}/{len(new_videos)} video(s).")
+    if triggered < len(new_videos):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

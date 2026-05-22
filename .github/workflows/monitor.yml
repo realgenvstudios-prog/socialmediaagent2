@@ -21,12 +21,15 @@ jobs:
         run: pip install requests python-dotenv supabase
 
       - name: Check for new videos
-        run: python scripts/check_youtube.py --check-only
+        run: python scripts/check_youtube.py
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
 
       - name: Log failure to Supabase
         if: failure()
