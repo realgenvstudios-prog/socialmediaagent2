@@ -52,10 +52,15 @@ def to_hhmmss(seconds):
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
-def _cookies_args():
-    """Return --cookies flag if YOUTUBE_COOKIES_FILE env var is set."""
-    path = os.environ.get("YOUTUBE_COOKIES_FILE")
-    return ["--cookies", path] if path else []
+def _ydl_auth_args():
+    """Return proxy or cookies args for yt-dlp authentication."""
+    proxy = os.environ.get("YTDLP_PROXY")
+    if proxy:
+        return ["--proxy", proxy]
+    cookies = os.environ.get("YOUTUBE_COOKIES_FILE")
+    if cookies:
+        return ["--cookies", cookies]
+    return []
 
 
 def download_audio_only(url, output_dir):
@@ -68,7 +73,7 @@ def download_audio_only(url, output_dir):
             "--no-playlist",
             "--js-runtimes", "node",
             "--remote-components", "ejs:github",
-            *_cookies_args(),
+            *_ydl_auth_args(),
             "-o", output_path,
             url,
         ],
@@ -104,7 +109,7 @@ def download_section(url, start_s, end_s, output_path):
         "--socket-timeout", "30",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
-        *_cookies_args(),
+        *_ydl_auth_args(),
         "-o", output_path,
         url,
     ]
