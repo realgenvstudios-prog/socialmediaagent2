@@ -64,8 +64,10 @@ def download_audio_only(url, output_dir):
     subprocess.run(
         [
             "yt-dlp",
-            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "--no-playlist",
+            "--js-runtimes", "node",
+            "--remote-components", "ejs:github",
             *_cookies_args(),
             "-o", output_path,
             url,
