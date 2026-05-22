@@ -30,6 +30,12 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Cache Whisper model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-medium-v1
+
       - name: Install system dependencies
         run: sudo apt-get install -y ffmpeg fonts-dejavu
 
@@ -47,6 +53,7 @@ jobs:
           INPUT_VIDEO_URL: ${{ github.event.inputs.video_url }}
           INPUT_VIDEO_TITLE: ${{ github.event.inputs.video_title }}
           YTDLP_PROXY: ${{ secrets.YTDLP_PROXY }}
+          NO_PROXY: huggingface.co,*.huggingface.co,cdn-lfs.huggingface.co
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
