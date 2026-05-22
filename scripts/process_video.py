@@ -52,6 +52,12 @@ def to_hhmmss(seconds):
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
+def _cookies_args():
+    """Return --cookies flag if YOUTUBE_COOKIES_FILE env var is set."""
+    path = os.environ.get("YOUTUBE_COOKIES_FILE")
+    return ["--cookies", path] if path else []
+
+
 def download_audio_only(url, output_dir):
     """Download just the audio stream — ~40MB for a 40-min podcast."""
     output_path = os.path.join(output_dir, "audio.%(ext)s")
@@ -60,8 +66,7 @@ def download_audio_only(url, output_dir):
             "yt-dlp",
             "-f", "bestaudio[ext=m4a]/bestaudio",
             "--no-playlist",
-            "--js-runtimes", "node",
-            "--remote-components", "ejs:github",
+            *_cookies_args(),
             "-o", output_path,
             url,
         ],
@@ -95,8 +100,7 @@ def download_section(url, start_s, end_s, output_path):
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--socket-timeout", "30",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
+        *_cookies_args(),
         "-o", output_path,
         url,
     ]

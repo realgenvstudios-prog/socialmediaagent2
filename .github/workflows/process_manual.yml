@@ -36,6 +36,12 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Write YouTube cookies
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          echo "$YOUTUBE_COOKIES" > /tmp/yt-cookies.txt
+
       - name: Process video
         run: |
           python scripts/process_video.py \
@@ -46,6 +52,7 @@ jobs:
           INPUT_VIDEO_ID: ${{ github.event.inputs.video_id }}
           INPUT_VIDEO_URL: ${{ github.event.inputs.video_url }}
           INPUT_VIDEO_TITLE: ${{ github.event.inputs.video_title }}
+          YOUTUBE_COOKIES_FILE: /tmp/yt-cookies.txt
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
