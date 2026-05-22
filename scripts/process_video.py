@@ -102,6 +102,8 @@ def download_section(url, start_s, end_s, output_path):
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--socket-timeout", "30",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         *_cookies_args(),
         "-o", output_path,
         url,
