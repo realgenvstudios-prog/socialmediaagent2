@@ -106,7 +106,10 @@ def download_section(url, start_s, end_s, output_path):
         "--download-sections", section_arg,
         "--force-keyframes-at-cuts",
         "--no-playlist",
-        "--socket-timeout", "30",
+        "--socket-timeout", "60",
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--http-chunk-size", "1M",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         *_ydl_auth_args(),
@@ -114,31 +117,33 @@ def download_section(url, start_s, end_s, output_path):
         url,
     ]
 
-    for attempt in range(3):
+    for attempt in range(5):
         # Remove stale partial file before each attempt
         if os.path.exists(output_path):
             os.remove(output_path)
         try:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError:
-            if attempt == 2:
+            if attempt == 4:
                 raise
-            print(f"    Download attempt {attempt + 1} failed, retrying in {10 * (attempt + 1)}s...")
-            _time.sleep(10 * (attempt + 1))
+            wait = 15 * (attempt + 1)
+            print(f"    Download attempt {attempt + 1} failed, retrying in {wait}s...")
+            _time.sleep(wait)
             continue
         # Verify the file is usable (non-empty, ffprobe can read it)
         if not os.path.exists(output_path) or os.path.getsize(output_path) < 10_000:
-            if attempt == 2:
+            if attempt == 4:
                 raise RuntimeError(f"Downloaded file too small or missing: {output_path}")
-            print(f"    Download attempt {attempt + 1} produced bad file, retrying...")
-            _time.sleep(10 * (attempt + 1))
+            wait = 15 * (attempt + 1)
+            print(f"    Download attempt {attempt + 1} produced bad file, retrying in {wait}s...")
+            _time.sleep(wait)
             continue
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1", output_path],
             capture_output=True,
         )
         if probe.returncode != 0:
-            if attempt == 2:
+            if attempt == 4:
                 raise RuntimeError(f"Downloaded file is corrupt: {output_path}")
             print(f"    Download attempt {attempt + 1} produced corrupt file, retrying...")
             _time.sleep(10 * (attempt + 1))
