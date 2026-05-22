@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 from supabase import create_client
 from faster_whisper import WhisperModel
@@ -59,6 +60,8 @@ def download_audio_only(url, output_dir):
             "yt-dlp",
             "-f", "bestaudio[ext=m4a]/bestaudio",
             "--no-playlist",
+            "--js-runtimes", "node",
+            "--remote-components", "ejs:github",
             "-o", output_path,
             url,
         ],
@@ -76,24 +79,59 @@ def download_section(url, start_s, end_s, output_path):
     Adds a 3-second buffer on each side so FFmpeg can cut cleanly at a keyframe.
     Returns the in-file offset (seconds) where the actual clip starts.
     """
+    import time as _time
     buffer = 3
     sec_start = max(0, start_s - buffer)
     sec_end = end_s + buffer
     section_arg = f"*{to_hhmmss(sec_start)}-{to_hhmmss(sec_end)}"
 
-    subprocess.run(
-        [
-            "yt-dlp",
-            "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
-            "--merge-output-format", "mp4",
-            "--download-sections", section_arg,
-            "--force-keyframes-at-cuts",
-            "--no-playlist",
-            "-o", output_path,
-            url,
-        ],
-        check=True,
-    )
+    # --remote-components ejs:github downloads the JS n-challenge solver from GitHub
+    # and runs it with node, unlocking 720p DASH formats.
+    cmd = [
+        "yt-dlp",
+        "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
+        "--merge-output-format", "mp4",
+        "--download-sections", section_arg,
+        "--force-keyframes-at-cuts",
+        "--no-playlist",
+        "--socket-timeout", "30",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "-o", output_path,
+        url,
+    ]
+
+    for attempt in range(3):
+        # Remove stale partial file before each attempt
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError:
+            if attempt == 2:
+                raise
+            print(f"    Download attempt {attempt + 1} failed, retrying in {10 * (attempt + 1)}s...")
+            _time.sleep(10 * (attempt + 1))
+            continue
+        # Verify the file is usable (non-empty, ffprobe can read it)
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 10_000:
+            if attempt == 2:
+                raise RuntimeError(f"Downloaded file too small or missing: {output_path}")
+            print(f"    Download attempt {attempt + 1} produced bad file, retrying...")
+            _time.sleep(10 * (attempt + 1))
+            continue
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1", output_path],
+            capture_output=True,
+        )
+        if probe.returncode != 0:
+            if attempt == 2:
+                raise RuntimeError(f"Downloaded file is corrupt: {output_path}")
+            print(f"    Download attempt {attempt + 1} produced corrupt file, retrying...")
+            _time.sleep(10 * (attempt + 1))
+            continue
+        break  # success
+
     return start_s - sec_start  # offset within the downloaded section
 
 
@@ -198,11 +236,19 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
   }}
 ]"""
 
-    msg = anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=6000,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    for attempt in range(3):
+        try:
+            msg = anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=6000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            break
+        except Exception as e:
+            if attempt == 2:
+                raise
+            print(f"  Claude API attempt {attempt + 1} failed ({e}), retrying...")
+            import time; time.sleep(10 * (attempt + 1))
 
     raw = msg.content[0].text.strip()
     # Robust extraction: find the outermost JSON array regardless of any surrounding text
@@ -225,23 +271,128 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
 
 # ── Video processing ───────────────────────────────────────────────────────────
 
-def cut_clip(section_path, offset_seconds, duration, output_path):
-    """Cut from the downloaded section and crop to 9:16 vertical."""
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-ss", str(offset_seconds),
-            "-i", section_path,
-            "-t", str(duration),
-            "-vf", "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
-            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            output_path, "-y",
-        ],
-        check=True,
-        capture_output=True,
+def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3):
+    """
+    Single encode pass: extract frames from section with crop/scale applied,
+    paste subtitles with Pillow, then encode exactly once. Eliminates generational
+    quality loss from double-encoding.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    W, H = 720, 1280
+    crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280"
+
+    # Probe source FPS
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=avg_frame_rate", "-of", "csv=p=0", section_path],
+        capture_output=True, text=True,
     )
+    try:
+        num, den = probe.stdout.strip().split("/")
+        fps = float(num) / float(den)
+    except Exception:
+        fps = 30.0
+
+    # ── Fast path: no words, just encode directly ──────────────────────────────
+    if not words:
+        subprocess.run([
+            "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
+            "-t", str(duration), "-vf", crop_scale,
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p", output_path, "-y",
+        ], check=True, capture_output=True)
+        return
+
+    # ── Step 1: Extract frames with crop/scale (decode only, no lossy encode) ──
+    frames_dir = os.path.join(tmpdir, f"frames_{clip_idx}")
+    os.makedirs(frames_dir, exist_ok=True)
+    subprocess.run([
+        "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
+        "-t", str(duration), "-vf", crop_scale,
+        os.path.join(frames_dir, "frame_%06d.png"), "-y",
+    ], check=True, capture_output=True)
+
+    # ── Step 2: Pre-render subtitle images ────────────────────────────────────
+    font_size = max(60, H // 14)
+    font_candidates = [
+        "/Library/Fonts/SF-Pro.ttf",
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    font_path = next((p for p in font_candidates if os.path.exists(p)), None)
+
+    chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
+    subtitle_data = []
+    max_text_w = int(W * 0.78)
+
+    for chunk in chunks:
+        if not chunk:
+            continue
+        start = chunk[0]["start"]
+        end = chunk[-1]["end"]
+        text = " ".join(wd["word"] for wd in chunk).upper()
+
+        size = font_size
+        while size >= 30:
+            try:
+                font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+            bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), text, font=font)
+            if bbox[2] - bbox[0] <= max_text_w:
+                break
+            size -= 4
+
+        bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad_x = max(20, size // 4)
+        pad_y = max(16, size // 5)
+        radius = max(16, size // 4)
+        img_w = tw + pad_x * 2
+        img_h = th + pad_y * 2
+
+        img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle([0, 0, img_w - 1, img_h - 1], radius=radius, fill=(0, 0, 0, 255))
+        # Subtract bbox origin so text is truly centered — textbbox origin can be non-zero
+        draw.text((pad_x - bbox[0], pad_y - bbox[1]), text, font=font,
+                  fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0, 200))
+
+        x_pos = max(10, (W - img_w) // 2)
+        y_pos = H - img_h - int(H * 0.13)
+        subtitle_data.append((start, end, img, x_pos, y_pos))
+
+    # ── Step 3: Paste subtitles onto extracted frames ─────────────────────────
+    frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
+    for fi, fname in enumerate(frame_files):
+        t = fi / fps
+        for start, end, sub_img, x, y in subtitle_data:
+            if start <= t < end:
+                fp = os.path.join(frames_dir, fname)
+                frame = Image.open(fp).convert("RGBA")
+                frame.paste(sub_img, (x, y), sub_img)
+                frame.convert("RGB").save(fp)
+                break
+
+    # ── Step 4: Single encode — frames + audio from section ───────────────────
+    subprocess.run([
+        "ffmpeg",
+        "-framerate", str(fps),
+        "-i", os.path.join(frames_dir, "frame_%06d.png"),
+        "-ss", str(offset_seconds), "-t", str(duration), "-i", section_path,
+        "-map", "0:v", "-map", "1:a",
+        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p", "-shortest",
+        output_path, "-y",
+    ], check=True, capture_output=True)
 
 
 # ── Subtitles ──────────────────────────────────────────────────────────────────
@@ -260,85 +411,33 @@ def words_for_clip(all_words, clip_start_s, clip_end_s):
     return result
 
 
-def burn_subtitles(clip_path, words, output_path, clip_idx, tmpdir, chunk_size=3):
-    """
-    Burn subtitles using FFmpeg drawtext filter — works without libass.
-    Each 3-word chunk is written to a temp textfile to avoid escaping issues
-    with apostrophes, colons, and other special characters in speech.
-    Style: bold white uppercase text, thick black outline, centred lower-third.
-    """
-    font_candidates = [
-        "/System/Library/Fonts/Helvetica.ttc",                           # macOS
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",          # Ubuntu
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    ]
-    font = next((p for p in font_candidates if os.path.exists(p)), None)
-
-    chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
-    filters = []
-    text_files = []
-
-    for j, chunk in enumerate(chunks):
-        if not chunk:
-            continue
-        start = chunk[0]["start"]
-        end = chunk[-1]["end"]
-        text = " ".join(w["word"] for w in chunk).upper()
-
-        # Write to file — avoids all FFmpeg filter escaping headaches
-        tf = os.path.join(tmpdir, f"sub_{clip_idx}_{j}.txt")
-        with open(tf, "w", encoding="utf-8") as f:
-            f.write(text)
-        text_files.append(tf)
-
-        font_part = f"fontfile={font}:" if font else ""
-        filters.append(
-            f"drawtext={font_part}"
-            f"textfile={tf}:"
-            f"enable='between(t,{start:.3f},{end:.3f})':"
-            f"fontsize=100:fontcolor=white:borderw=6:bordercolor=black:"
-            f"x=(w-text_w)/2:y=h-text_h-200"
-        )
-
-    if not filters:
-        return
-
-    result = subprocess.run(
-        [
-            "ffmpeg", "-i", clip_path,
-            "-vf", ",".join(filters),
-            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-            "-c:a", "copy",
-            output_path, "-y",
-        ],
-        capture_output=True,
-    )
-
-    for tf in text_files:
-        try:
-            os.remove(tf)
-        except OSError:
-            pass
-
-    if result.returncode != 0:
-        err = result.stderr.decode(errors="replace")[-600:]
-        raise RuntimeError(f"FFmpeg drawtext failed (exit {result.returncode}): {err}")
-
-
 def upload_clip(supabase, local_path, storage_path):
     """Upload to Supabase Storage public bucket, return public URL."""
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/clips/{storage_path}"
     with open(local_path, "rb") as f:
         data = f.read()
-    supabase.storage.from_("clips").upload(
-        path=storage_path,
-        file=data,
-        file_options={"content-type": "video/mp4", "upsert": "true"},
-    )
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "video/mp4",
+        "x-upsert": "true",
+    }
+    for attempt in range(3):
+        try:
+            resp = requests.post(upload_url, data=data, headers=headers, timeout=300)
+            break
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt == 2:
+                raise
+            import time; time.sleep(5 * (attempt + 1))
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Upload failed ({resp.status_code}): {resp.text[:300]}")
     return supabase.storage.from_("clips").get_public_url(storage_path)
 
 
 def queue_clip(supabase, video_id, clip_index, storage_path, public_url, caption, hook, platform):
+    existing = supabase.table("clip_queue").select("id").eq("video_id", video_id).eq("clip_index", clip_index).eq("platform", platform).execute()
+    if existing.data:
+        return  # already queued, skip
     supabase.table("clip_queue").insert({
         "video_id": video_id,
         "clip_index": clip_index,
@@ -424,21 +523,14 @@ def main():
             print(f"  Downloading section...")
             offset = download_section(args.url, start_s, end_s, section_path)
 
-            print(f"  Cutting and cropping to 9:16...")
-            cut_clip(section_path, offset, duration, clip_path)
+            clip_words = words_for_clip(words, start_s, end_s) if words else []
+            print(f"  Cutting, cropping, burning subtitles ({len(clip_words)} words)...")
+            try:
+                cut_and_subtitle(section_path, offset, duration, clip_words, clip_path, i, tmpdir)
+            except Exception as e:
+                print(f"  cut_and_subtitle failed ({e}), retrying without subtitles...")
+                cut_and_subtitle(section_path, offset, duration, [], clip_path, i, tmpdir)
             os.remove(section_path)  # free space immediately
-
-            if words:
-                clip_words = words_for_clip(words, start_s, end_s)
-                if clip_words:
-                    subtitled_path = os.path.join(tmpdir, f"{args.video_id}_clip_{i}_sub.mp4")
-                    print(f"  Burning subtitles ({len(clip_words)} words)...")
-                    try:
-                        burn_subtitles(clip_path, clip_words, subtitled_path, i, tmpdir)
-                        os.remove(clip_path)
-                        clip_path = subtitled_path
-                    except Exception as e:
-                        print(f"  Subtitle burn failed — uploading without subtitles. ({e})")
 
             clip_mb = os.path.getsize(clip_path) / 1024 / 1024
             print(f"  Uploading ({clip_mb:.1f}MB)...")
