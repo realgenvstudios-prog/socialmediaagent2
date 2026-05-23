@@ -50,3 +50,25 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT INTO settings (key, value)
 VALUES ('schedule', '{"times": ["09:00", "13:00", "18:00"]}')
 ON CONFLICT (key) DO NOTHING;
+
+-- Saved transcripts so we never re-transcribe the same video
+CREATE TABLE IF NOT EXISTS video_transcripts (
+    video_id     TEXT PRIMARY KEY,
+    transcript   TEXT NOT NULL,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Claude's clip plan — saved immediately after Claude responds
+-- so the pipeline can resume from here if it crashes mid-download
+CREATE TABLE IF NOT EXISTS video_clip_plans (
+    id           UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+    video_id     TEXT        NOT NULL,
+    clip_index   INTEGER     NOT NULL,
+    start_seconds FLOAT      NOT NULL,
+    end_seconds  FLOAT       NOT NULL,
+    caption      TEXT        NOT NULL,
+    hook         TEXT,
+    status       TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'failed')),
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (video_id, clip_index)
+);

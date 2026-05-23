@@ -467,6 +467,62 @@ def queue_clip(supabase, video_id, clip_index, storage_path, public_url, caption
     }).execute()
 
 
+# ── Transcript persistence ─────────────────────────────────────────────────────
+
+def _load_transcript(supabase_admin, local_cache, video_id):
+    """Load transcript from local cache or Supabase. Returns (segments, words) or (None, [])."""
+    if os.path.exists(local_cache):
+        with open(local_cache) as f:
+            cached = json.load(f)
+        if isinstance(cached, dict) and "words" in cached:
+            print(f"\n[CACHED] Transcript loaded locally — {len(cached['segments'])} segments")
+            return cached["segments"], cached["words"]
+
+    try:
+        result = supabase_admin.table("video_transcripts").select("transcript").eq("video_id", video_id).execute()
+        if result.data:
+            cached = json.loads(result.data[0]["transcript"])
+            segments, words = cached["segments"], cached.get("words", [])
+            print(f"\n[SUPABASE] Transcript loaded — {len(segments)} segments")
+            with open(local_cache, "w") as f:
+                json.dump(cached, f)
+            return segments, words
+    except Exception as e:
+        print(f"  Warning: could not load transcript from Supabase: {e}")
+
+    return None, []
+
+
+def _save_transcript(supabase_admin, local_cache, video_id, segments, words):
+    """Save transcript to local cache and Supabase."""
+    data = {"segments": segments, "words": words}
+    with open(local_cache, "w") as f:
+        json.dump(data, f)
+    try:
+        supabase_admin.table("video_transcripts").upsert({
+            "video_id": video_id,
+            "transcript": json.dumps(data),
+        }).execute()
+        print(f"  Transcript saved to Supabase")
+    except Exception as e:
+        print(f"  Warning: could not save transcript to Supabase: {e}")
+
+
+def _save_clip_plan(supabase_admin, video_id, clips):
+    """Save Claude's clip selections to Supabase immediately after Claude responds."""
+    rows = [{
+        "video_id": video_id,
+        "clip_index": i,
+        "start_seconds": clip["start_seconds"],
+        "end_seconds": clip["end_seconds"],
+        "caption": json.dumps(clip.get("captions", {})),
+        "hook": clip.get("hook", ""),
+        "status": "pending",
+    } for i, clip in enumerate(clips)]
+    supabase_admin.table("video_clip_plans").upsert(rows).execute()
+    print(f"  Clip plan saved to Supabase ({len(rows)} clips)")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -485,92 +541,134 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmpdir:
 
-        # ── PASS 1: Audio → Transcript ─────────────────────────────────────────
-        segments = None
-        words = []
+        # ── Check for resumable clip plan in Supabase ──────────────────────────
+        pending_rows = supabase_admin.table("video_clip_plans") \
+            .select("*").eq("video_id", args.video_id).neq("status", "done") \
+            .order("clip_index").execute()
 
-        if os.path.exists(transcript_cache):
-            with open(transcript_cache) as f:
-                cached = json.load(f)
-            if isinstance(cached, dict) and "words" in cached:
-                segments = cached["segments"]
-                words = cached["words"]
-                print(f"\n[CACHED] Transcript loaded — {len(segments)} segments, {len(words)} words")
-            else:
-                print(f"\n[CACHE] Old format (no word timestamps) — re-transcribing")
+        if pending_rows.data:
+            print(f"\n[RESUME] {len(pending_rows.data)} unfinished clips found — skipping audio/transcription/Claude")
+            segments, words = _load_transcript(supabase_admin, transcript_cache, args.video_id)
+            clips_to_process = []
+            for row in pending_rows.data:
+                try:
+                    captions = json.loads(row["caption"])
+                except Exception:
+                    captions = {p: row["caption"] for p in ["instagram", "tiktok", "youtube", "facebook"]}
+                clips_to_process.append({
+                    "clip_index": row["clip_index"],
+                    "start_seconds": row["start_seconds"],
+                    "end_seconds": row["end_seconds"],
+                    "hook": row.get("hook", ""),
+                    "captions": captions,
+                })
+            total_clips = supabase_admin.table("video_clip_plans") \
+                .select("clip_index", count="exact").eq("video_id", args.video_id).execute()
+            total = total_clips.count or len(clips_to_process)
+        else:
+            # ── PASS 1: Audio → Transcript ─────────────────────────────────────
+            segments, words = _load_transcript(supabase_admin, transcript_cache, args.video_id)
 
-        if segments is None:
-            print(f"\n[1/2 downloads] Audio only from: {args.url}")
-            audio_path = download_audio_only(args.url, tmpdir)
-            size_mb = os.path.getsize(audio_path) / 1024 / 1024
-            print(f"  Downloaded audio: {size_mb:.1f}MB")
+            if segments is None:
+                print(f"\n[1/2 downloads] Audio only from: {args.url}")
+                audio_path = download_audio_only(args.url, tmpdir)
+                size_mb = os.path.getsize(audio_path) / 1024 / 1024
+                print(f"  Downloaded audio: {size_mb:.1f}MB")
 
-            print("[Transcribing]")
-            segments, words = transcribe(audio_path)
-            print(f"  {len(segments)} transcript segments, {len(words)} words")
+                print("[Transcribing]")
+                segments, words = transcribe(audio_path)
+                print(f"  {len(segments)} transcript segments, {len(words)} words")
+                _save_transcript(supabase_admin, transcript_cache, args.video_id, segments, words)
 
-            with open(transcript_cache, "w") as f:
-                json.dump({"segments": segments, "words": words}, f)
-            print(f"  Transcript cached to {transcript_cache}")
+            # ── Claude picks clips ─────────────────────────────────────────────
+            print("\n[Claude] Selecting viral clips from transcript...")
+            all_clips = select_clips(anthropic_client, segments, args.title)
+            print(f"  {len(all_clips)} clips selected")
 
-        # ── Claude picks clips ─────────────────────────────────────────────────
-        print("\n[Claude] Selecting viral clips from transcript...")
-        clips = select_clips(anthropic_client, segments, args.title)
-        print(f"  {len(clips)} clips selected\n")
+            if not all_clips:
+                print("No valid clips returned by Claude. Exiting.", file=sys.stderr)
+                sys.exit(1)
 
-        if not clips:
-            print("No valid clips returned by Claude. Exiting.", file=sys.stderr)
-            sys.exit(1)
+            _save_clip_plan(supabase_admin, args.video_id, all_clips)
 
-        for i, clip in enumerate(clips):
-            print(f"  Clip {i+1}: {to_hhmmss(clip['start_seconds'])} → {to_hhmmss(clip['end_seconds'])} | {clip['hook'][:65]}")
+            for i, clip in enumerate(all_clips):
+                print(f"  [{i+1}] {to_hhmmss(clip['start_seconds'])} → {to_hhmmss(clip['end_seconds'])} | {clip['hook'][:65]}")
+
+            clips_to_process = [{"clip_index": i, **clip} for i, clip in enumerate(all_clips)]
+            total = len(all_clips)
 
         # ── PASS 2: Download each clip section → cut → upload → queue ──────────
-        print(f"\n[2/2 downloads] Downloading {len(clips)} clip sections at 720p...")
-        for i, clip in enumerate(clips):
-            start_s = clip["start_seconds"]
-            end_s = clip["end_seconds"]
+        print(f"\n[2/2 downloads] Processing {len(clips_to_process)}/{total} clip sections at 720p...")
+        succeeded = 0
+        for item in clips_to_process:
+            i = item["clip_index"]
+            start_s = item["start_seconds"]
+            end_s = item["end_seconds"]
             duration = end_s - start_s
 
             section_path = os.path.join(tmpdir, f"section_{i}.mp4")
             clip_path = os.path.join(tmpdir, f"{args.video_id}_clip_{i}.mp4")
             storage_path = f"{args.video_id}/{args.video_id}_clip_{i}.mp4"
 
-            print(f"\n  [{i+1}/{len(clips)}] {to_hhmmss(start_s)} → {to_hhmmss(end_s)} ({duration:.0f}s)")
-            print(f"  Downloading section...")
-            offset = download_section(args.url, start_s, end_s, section_path)
-
-            clip_words = words_for_clip(words, start_s, end_s) if words else []
-            print(f"  Cutting, cropping, burning subtitles ({len(clip_words)} words)...")
+            print(f"\n  [{i+1}/{total}] {to_hhmmss(start_s)} → {to_hhmmss(end_s)} ({duration:.0f}s)")
             try:
-                cut_and_subtitle(section_path, offset, duration, clip_words, clip_path, i, tmpdir)
+                print(f"  Downloading section...")
+                offset = download_section(args.url, start_s, end_s, section_path)
+
+                clip_words = words_for_clip(words, start_s, end_s) if words else []
+                print(f"  Cutting, cropping, burning subtitles ({len(clip_words)} words)...")
+                try:
+                    cut_and_subtitle(section_path, offset, duration, clip_words, clip_path, i, tmpdir)
+                except Exception as e:
+                    print(f"  cut_and_subtitle failed ({e}), retrying without subtitles...")
+                    cut_and_subtitle(section_path, offset, duration, [], clip_path, i, tmpdir)
+
+                for path in [section_path]:
+                    if os.path.exists(path):
+                        os.remove(path)
+
+                clip_mb = os.path.getsize(clip_path) / 1024 / 1024
+                print(f"  Uploading ({clip_mb:.1f}MB)...")
+                public_url = upload_clip(supabase_admin, clip_path, storage_path)
+
+                captions = item.get("captions", {})
+                for platform in ["instagram", "tiktok", "youtube", "facebook"]:
+                    caption = captions.get(platform) or item.get("caption", "")
+                    queue_clip(supabase_admin, args.video_id, i, storage_path, public_url, caption, item.get("hook", ""), platform)
+
+                print(f"  Queued: {public_url[:60]}...")
+                supabase_admin.table("video_clip_plans").update({"status": "done"}) \
+                    .eq("video_id", args.video_id).eq("clip_index", i).execute()
+                succeeded += 1
+
             except Exception as e:
-                print(f"  cut_and_subtitle failed ({e}), retrying without subtitles...")
-                cut_and_subtitle(section_path, offset, duration, [], clip_path, i, tmpdir)
-            os.remove(section_path)  # free space immediately
-
-            clip_mb = os.path.getsize(clip_path) / 1024 / 1024
-            print(f"  Uploading ({clip_mb:.1f}MB)...")
-            public_url = upload_clip(supabase_admin, clip_path, storage_path)
-
-            captions = clip.get("captions", {})
-            for platform in ["instagram", "tiktok", "youtube", "facebook"]:
-                caption = captions.get(platform) or clip.get("caption", "")
-                queue_clip(supabase_admin, args.video_id, i, storage_path, public_url, caption, clip.get("hook", ""), platform)
-
-            print(f"  Queued: {public_url[:60]}...")
+                print(f"  ✗ Clip {i+1} failed: {e} — skipping, continuing...")
+                supabase_admin.table("video_clip_plans").update({"status": "failed"}) \
+                    .eq("video_id", args.video_id).eq("clip_index", i).execute()
+                for path in [section_path, clip_path]:
+                    if os.path.exists(path):
+                        os.remove(path)
+                continue
 
         # ── Mark processed ─────────────────────────────────────────────────────
-        supabase_admin.table("processed_videos").insert({
-            "video_id": args.video_id,
-            "video_title": args.title,
-            "channel_id": CHANNEL_ID,
-            "clip_count": len(clips),
-        }).execute()
+        if succeeded > 0:
+            existing = supabase_admin.table("processed_videos").select("id") \
+                .eq("video_id", args.video_id).execute()
+            if not existing.data:
+                supabase_admin.table("processed_videos").insert({
+                    "video_id": args.video_id,
+                    "video_title": args.title,
+                    "channel_id": CHANNEL_ID,
+                    "clip_count": succeeded,
+                }).execute()
 
-        platforms = ["instagram", "tiktok", "youtube", "facebook"]
-        total_posts = len(clips) * len(platforms)
-        print(f"\n✓ Done. {len(clips)} clips queued — {total_posts} posts scheduled across {', '.join(p.capitalize() for p in platforms)}.")
+            platforms = ["instagram", "tiktok", "youtube", "facebook"]
+            print(f"\n✓ Done. {succeeded}/{total} clips queued — {succeeded * len(platforms)} posts scheduled.")
+            if succeeded < total:
+                print(f"  ⚠ {total - succeeded} clips failed. Re-run to retry — clip plan is saved in Supabase.")
+        else:
+            print(f"\n✗ All {total} clips failed.", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
