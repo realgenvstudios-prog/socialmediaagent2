@@ -198,7 +198,7 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
 
 ━━━ CLIP SELECTION RULES ━━━
 
-1. CHRONOLOGICAL SYSTEMATIC REVIEW — Read through the entire transcript from start to finish. Do not ignore the middle sections. Distribute your selections evenly across the entire runtime. Do not cluster clips in a single high-energy segment.
+1. CHRONOLOGICAL SYSTEMATIC REVIEW — Read through the entire transcript from start to finish. Do not ignore the middle sections. Distribute your selections evenly across the entire runtime. Do not cluster clips in a single high-energy segment. IMPORTANT: The opening 2–3 minutes of a podcast is typically an intro montage — rapid jump cuts between unrelated moments designed to tease the full episode. These make no sense as standalone clips. Use your judgment to identify and skip this intro section; look for where the hosts settle into the actual conversation (usually when they introduce themselves or the guest properly) and start your selections from there.
 
 2. TARGET LENGTH — Target 45 to 65 seconds per clip. This is the proven sweet spot for completion rate across all 4 platforms. Never go below 30 seconds or above 90 seconds. Tighter is better. The clip must start precisely on the opening word of the hook and end the moment the idea concludes — do not trail off into the next topic or filler.
 
