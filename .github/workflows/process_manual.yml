@@ -49,8 +49,10 @@ jobs:
 
       - name: Start bgutil PO token provider
         run: |
-          npx --yes @brainicism/bgutil-ytdlp-pot-provider &
-          sleep 5
+          git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil
+          cd /tmp/bgutil/server && npm ci && npx tsc
+          node /tmp/bgutil/server/build/main.js &
+          sleep 10
 
       - name: Process video
         run: |
