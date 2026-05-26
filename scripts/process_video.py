@@ -267,6 +267,53 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
 
 # ── Video processing ───────────────────────────────────────────────────────────
 
+def _smart_crop_x(video_path, start_s, duration):
+    """
+    Sample frames within the clip, detect faces, and return the optimal
+    horizontal crop offset so the speaker's face is centered rather than the
+    dead-center of the frame (which consistently misses off-center speakers).
+    Returns (x_offset, crop_w, frame_h) or None to fall back to center crop.
+    """
+    try:
+        import cv2
+        face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        crop_w = frame_h * 9 // 16
+        min_face = max(20, frame_h // 8)
+
+        face_centers = []
+        for i in range(1, 6):  # 5 evenly spaced frames
+            cap.set(cv2.CAP_PROP_POS_MSEC, (start_s + duration * i / 6) * 1000)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=3, minSize=(min_face, min_face)
+            )
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                face_centers.append(x + w // 2)
+        cap.release()
+
+        if not face_centers:
+            return None
+
+        avg_cx = int(sum(face_centers) / len(face_centers))
+        x_off = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
+        return x_off, crop_w, frame_h
+
+    except Exception:
+        return None
+
+
 def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3):
     """
     Single encode pass: extract frames from section with crop/scale applied,
@@ -274,7 +321,14 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     quality loss from double-encoding.
     """
     W, H = 720, 1280
-    crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280"
+
+    # Smart crop: center on detected face, fall back to dead-center if no face found
+    face_result = _smart_crop_x(section_path, offset_seconds, duration)
+    if face_result:
+        x_off, crop_w, frame_h = face_result
+        crop_scale = f"crop={crop_w}:{frame_h}:{x_off}:0,scale=720:1280"
+    else:
+        crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280"
 
     # Probe source FPS
     probe = subprocess.run(

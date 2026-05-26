@@ -37,7 +37,7 @@ jobs:
           key: whisper-medium-v1
 
       - name: Install system dependencies
-        run: sudo apt-get install -y ffmpeg fonts-dejavu
+        run: sudo apt-get install -y ffmpeg fonts-dejavu libgl1-mesa-glx libglib2.0-0
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt && pip install "Pillow>=10.0.0"
