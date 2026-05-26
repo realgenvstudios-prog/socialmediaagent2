@@ -19,6 +19,7 @@ Usage:
 import os
 import sys
 import json
+import time
 import argparse
 import subprocess
 import tempfile
@@ -85,72 +86,49 @@ def download_audio_only(url, output_dir):
     return str(matches[0])
 
 
-def download_section(url, start_s, end_s, output_path):
+def download_full_video(url, output_path):
     """
-    Download only a specific time section at 720p.
-    Adds a 3-second buffer on each side so FFmpeg can cut cleanly at a keyframe.
-    Returns the in-file offset (seconds) where the actual clip starts.
+    Download the full video using yt-dlp's own downloader.
+    Format priority: progressive MP4 (single stream, no DASH) → DASH h264 → anything.
+    Progressive formats avoid the 403 issue where --download-sections makes ffmpeg
+    fetch CDN URLs directly. With progressive, yt-dlp downloads the whole file itself.
     """
-    import time as _time
-    buffer = 3
-    sec_start = max(0, start_s - buffer)
-    sec_end = end_s + buffer
-    section_arg = f"*{to_hhmmss(sec_start)}-{to_hhmmss(sec_end)}"
-
-    # --remote-components ejs:github downloads the JS n-challenge solver from GitHub
-    # and runs it with node, unlocking 720p DASH formats.
+    # Format 22 = 720p h264+aac progressive (single stream, best quality, not always available).
+    # Format 18 = 360p h264+aac progressive (always available, fallback).
+    # Both avoid DASH section downloads which YouTube blocks from server IPs.
+    format_str = "22/18"
     cmd = [
         "yt-dlp",
-        "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
+        "-f", format_str,
         "--merge-output-format", "mp4",
-        "--download-sections", section_arg,
-        "--force-keyframes-at-cuts",
         "--no-playlist",
         "--socket-timeout", "60",
         "--retries", "10",
         "--fragment-retries", "10",
-        "--http-chunk-size", "1M",
+        "--http-chunk-size", "10M",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         *_ydl_auth_args(),
         "-o", output_path,
         url,
     ]
-
-    for attempt in range(5):
-        # Remove stale partial file before each attempt
+    for attempt in range(3):
         if os.path.exists(output_path):
             os.remove(output_path)
         try:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError:
-            if attempt == 4:
+            if attempt == 2:
                 raise
-            wait = 15 * (attempt + 1)
-            print(f"    Download attempt {attempt + 1} failed, retrying in {wait}s...")
-            _time.sleep(wait)
+            print(f"    Video download attempt {attempt + 1} failed, retrying in 30s...")
+            time.sleep(30)
             continue
-        # Verify the file is usable (non-empty, ffprobe can read it)
-        if not os.path.exists(output_path) or os.path.getsize(output_path) < 10_000:
-            if attempt == 4:
-                raise RuntimeError(f"Downloaded file too small or missing: {output_path}")
-            wait = 15 * (attempt + 1)
-            print(f"    Download attempt {attempt + 1} produced bad file, retrying in {wait}s...")
-            _time.sleep(wait)
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 100_000:
+            if attempt == 2:
+                raise RuntimeError(f"Full video download produced no usable file: {output_path}")
+            time.sleep(30)
             continue
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1", output_path],
-            capture_output=True,
-        )
-        if probe.returncode != 0:
-            if attempt == 4:
-                raise RuntimeError(f"Downloaded file is corrupt: {output_path}")
-            print(f"    Download attempt {attempt + 1} produced corrupt file, retrying...")
-            _time.sleep(10 * (attempt + 1))
-            continue
-        break  # success
-
-    return start_s - sec_start  # offset within the downloaded section
+        break
 
 
 # ── Transcription ──────────────────────────────────────────────────────────────
@@ -597,8 +575,16 @@ def main():
             clips_to_process = [{"clip_index": i, **clip} for i, clip in enumerate(all_clips)]
             total = len(all_clips)
 
-        # ── PASS 2: Download each clip section → cut → upload → queue ──────────
-        print(f"\n[2/2 downloads] Processing {len(clips_to_process)}/{total} clip sections at 720p...")
+        # ── PASS 2: Download full video once → cut each clip locally ────────────
+        # Downloading sections via --download-sections causes ffmpeg to fetch CDN
+        # URLs directly, which YouTube blocks with 403. Downloading the full video
+        # uses yt-dlp's own downloader (which works), then we cut locally.
+        full_video_path = os.path.join(tmpdir, f"{args.video_id}_full.mp4")
+        print(f"\n[2/2 downloads] Downloading full video at 720p (this takes a few minutes)...")
+        download_full_video(args.url, full_video_path)
+        full_mb = os.path.getsize(full_video_path) / 1024 / 1024
+        print(f"  Downloaded: {full_mb:.0f}MB → cutting {len(clips_to_process)} clips locally...")
+
         succeeded = 0
         for item in clips_to_process:
             i = item["clip_index"]
@@ -606,26 +592,18 @@ def main():
             end_s = item["end_seconds"]
             duration = end_s - start_s
 
-            section_path = os.path.join(tmpdir, f"section_{i}.mp4")
             clip_path = os.path.join(tmpdir, f"{args.video_id}_clip_{i}.mp4")
             storage_path = f"{args.video_id}/{args.video_id}_clip_{i}.mp4"
 
             print(f"\n  [{i+1}/{total}] {to_hhmmss(start_s)} → {to_hhmmss(end_s)} ({duration:.0f}s)")
             try:
-                print(f"  Downloading section...")
-                offset = download_section(args.url, start_s, end_s, section_path)
-
                 clip_words = words_for_clip(words, start_s, end_s) if words else []
                 print(f"  Cutting, cropping, burning subtitles ({len(clip_words)} words)...")
                 try:
-                    cut_and_subtitle(section_path, offset, duration, clip_words, clip_path, i, tmpdir)
+                    cut_and_subtitle(full_video_path, start_s, duration, clip_words, clip_path, i, tmpdir)
                 except Exception as e:
                     print(f"  cut_and_subtitle failed ({e}), retrying without subtitles...")
-                    cut_and_subtitle(section_path, offset, duration, [], clip_path, i, tmpdir)
-
-                for path in [section_path]:
-                    if os.path.exists(path):
-                        os.remove(path)
+                    cut_and_subtitle(full_video_path, start_s, duration, [], clip_path, i, tmpdir)
 
                 clip_mb = os.path.getsize(clip_path) / 1024 / 1024
                 print(f"  Uploading ({clip_mb:.1f}MB)...")
@@ -639,15 +617,16 @@ def main():
                 print(f"  Queued: {public_url[:60]}...")
                 supabase_admin.table("video_clip_plans").update({"status": "done"}) \
                     .eq("video_id", args.video_id).eq("clip_index", i).execute()
+                if os.path.exists(clip_path):
+                    os.remove(clip_path)
                 succeeded += 1
 
             except Exception as e:
                 print(f"  ✗ Clip {i+1} failed: {e} — skipping, continuing...")
                 supabase_admin.table("video_clip_plans").update({"status": "failed"}) \
                     .eq("video_id", args.video_id).eq("clip_index", i).execute()
-                for path in [section_path, clip_path]:
-                    if os.path.exists(path):
-                        os.remove(path)
+                if os.path.exists(clip_path):
+                    os.remove(clip_path)
                 continue
 
         # ── Mark processed ─────────────────────────────────────────────────────
