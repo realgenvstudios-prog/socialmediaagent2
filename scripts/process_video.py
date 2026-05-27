@@ -89,11 +89,11 @@ def download_audio_only(url, output_dir):
 def download_full_video(url, output_path):
     """
     Download the full video using yt-dlp's own downloader.
-    Tries 1080p DASH first (yt-dlp handles CDN, no 403 risk), falls back to
-    720p/360p progressive if 1080p isn't available.
+    Format 22 = 720p progressive (single stream, no DASH merging).
+    1080p DASH is blocked by YouTube from datacenter IPs even with PO tokens.
     """
-    # Priority: 1080p DASH (best quality for 9:16 crop) → 720p progressive → 360p progressive
-    format_str = "bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/22/18"
+    # Format 22 = 720p h264+aac progressive. Format 18 = 360p fallback.
+    format_str = "22/18"
     cmd = [
         "yt-dlp",
         "-f", format_str,
@@ -325,9 +325,9 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     face_result = _smart_crop_x(section_path, offset_seconds, duration)
     if face_result:
         x_off, crop_w, frame_h = face_result
-        crop_scale = f"crop={crop_w}:{frame_h}:{x_off}:0,scale=720:1280"
+        crop_scale = f"crop={crop_w}:{frame_h}:{x_off}:0,scale=720:1280:flags=lanczos,unsharp=3:3:0.5:3:3:0.0"
     else:
-        crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280"
+        crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280:flags=lanczos,unsharp=3:3:0.5:3:3:0.0"
 
     # Probe source FPS
     probe = subprocess.run(
