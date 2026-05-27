@@ -204,15 +204,17 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
 
 ━━━ CAPTION RULES ━━━
 
-Write platform-specific captions for each clip:
+NEVER use em dashes (—) anywhere in any caption. Use a comma, a full stop, or rewrite the sentence instead.
 
-instagram: 2–3 punchy sentences that expand on the hook and tease what they'll learn. End with 5–8 relevant hashtags on a new line. Tone: direct, energetic, slightly dramatic.
+Write platform-specific captions for each clip. They must sound like a real person wrote them, not a brand or marketing team. Avoid hype words like "game-changer", "powerful", "incredible". Write like you are texting a friend about something that genuinely surprised you.
 
-tiktok: 1–2 very casual sentences. Sounds like a person talking, not a brand. 3–5 hashtags maximum. Tone: conversational, raw, unpolished.
+instagram: 2–3 short sentences. Expand on the hook and make them want to watch. End with 5–8 relevant hashtags on a new line. Tone: direct and real, like a sharp comment not an ad.
 
-youtube: A standalone title that works as a YouTube Shorts title (max 80 characters). Must create curiosity or promise a specific payoff. No hashtags. Capitalise like a headline.
+tiktok: 1–2 very casual sentences. Sounds like someone who just watched this and had to share it. 3–5 hashtags max. Tone: off the cuff, human, slightly opinionated.
 
-facebook: 2–3 sentences written for a slightly older, more conversational Facebook audience. More context than TikTok, less hype than Instagram. No hashtags.
+youtube: A standalone title that works as a YouTube Shorts title (max 80 characters). Create curiosity or promise a specific payoff. No hashtags. Capitalise like a headline but keep it plain spoken.
+
+facebook: 2–3 sentences for a slightly older audience. More context, less hype. Write like you are sharing something interesting you came across. No hashtags.
 
 ━━━ OUTPUT FORMAT ━━━
 
