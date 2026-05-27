@@ -550,7 +550,7 @@ def _save_clip_plan(supabase_admin, video_id, clips):
         "hook": clip.get("hook", ""),
         "status": "pending",
     } for i, clip in enumerate(clips)]
-    supabase_admin.table("video_clip_plans").upsert(rows).execute()
+    supabase_admin.table("video_clip_plans").upsert(rows, on_conflict="video_id,clip_index").execute()
     print(f"  Clip plan saved to Supabase ({len(rows)} clips)")
 
 
