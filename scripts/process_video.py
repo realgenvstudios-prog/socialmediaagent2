@@ -89,14 +89,11 @@ def download_audio_only(url, output_dir):
 def download_full_video(url, output_path):
     """
     Download the full video using yt-dlp's own downloader.
-    Format priority: progressive MP4 (single stream, no DASH) → DASH h264 → anything.
-    Progressive formats avoid the 403 issue where --download-sections makes ffmpeg
-    fetch CDN URLs directly. With progressive, yt-dlp downloads the whole file itself.
+    Tries 1080p DASH first (yt-dlp handles CDN, no 403 risk), falls back to
+    720p/360p progressive if 1080p isn't available.
     """
-    # Format 22 = 720p h264+aac progressive (single stream, best quality, not always available).
-    # Format 18 = 360p h264+aac progressive (always available, fallback).
-    # Both avoid DASH section downloads which YouTube blocks from server IPs.
-    format_str = "22/18"
+    # Priority: 1080p DASH (best quality for 9:16 crop) → 720p progressive → 360p progressive
+    format_str = "bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/22/18"
     cmd = [
         "yt-dlp",
         "-f", format_str,
