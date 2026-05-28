@@ -268,16 +268,18 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
 
 def _smart_crop_x(video_path, start_s, duration):
     """
-    Sample frames within the clip, detect faces, and return the optimal
-    horizontal crop offset so the speaker's face is centered rather than the
-    dead-center of the frame (which consistently misses off-center speakers).
+    Sample frames within the clip, detect faces using multiple cascades, and
+    return the optimal horizontal crop offset. Falls back to variance-based
+    side detection (which side of the frame has the speaker) if no face found.
     Returns (x_offset, crop_w, frame_h) or None to fall back to center crop.
     """
     try:
         import cv2
-        face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
+        cascades = [
+            cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml"),
+            cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml"),
+            cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml"),
+        ]
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return None
@@ -285,29 +287,45 @@ def _smart_crop_x(video_path, start_s, duration):
         frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         crop_w = frame_h * 9 // 16
-        min_face = max(20, frame_h // 8)
+        min_face = max(20, frame_h // 10)
 
         face_centers = []
-        for i in range(1, 6):  # 5 evenly spaced frames
-            cap.set(cv2.CAP_PROP_POS_MSEC, (start_s + duration * i / 6) * 1000)
+        frames_sampled = []
+        n = 10
+        for i in range(1, n + 1):
+            cap.set(cv2.CAP_PROP_POS_MSEC, (start_s + duration * i / (n + 1)) * 1000)
             ret, frame = cap.read()
             if not ret:
                 continue
+            frames_sampled.append(frame)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=3, minSize=(min_face, min_face)
-            )
-            if len(faces) > 0:
-                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                face_centers.append(x + w // 2)
+            for cascade in cascades:
+                faces = cascade.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=2, minSize=(min_face, min_face)
+                )
+                if len(faces) > 0:
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    face_centers.append(x + w // 2)
+                    break
         cap.release()
 
-        if not face_centers:
-            return None
+        if face_centers:
+            avg_cx = int(sum(face_centers) / len(face_centers))
+            x_off = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
+            return x_off, crop_w, frame_h
 
-        avg_cx = int(sum(face_centers) / len(face_centers))
-        x_off = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
-        return x_off, crop_w, frame_h
+        # No face detected — use pixel variance to find which side has the speaker.
+        # In a podcast the host/guest is left or right of center; the mic is in the middle.
+        if frames_sampled:
+            import numpy as np
+            third = frame_w // 3
+            left_var = float(np.var([f[:, :third] for f in frames_sampled]))
+            right_var = float(np.var([f[:, 2 * third:] for f in frames_sampled]))
+            cx = third // 2 if left_var > right_var else 2 * third + third // 2
+            x_off = max(0, min(cx - crop_w // 2, frame_w - crop_w))
+            return x_off, crop_w, frame_h
+
+        return None
 
     except Exception:
         return None
