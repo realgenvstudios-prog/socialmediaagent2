@@ -114,6 +114,124 @@ def save_intelligence(summary: str, stats: dict) -> None:
     print("  Saved channel intelligence to Supabase.")
 
 
+# ── Decision outcome tracking ─────────────────────────────────────────────────
+
+def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
+    """
+    Match logged clip selections to their real analytics and fill in
+    performance data. Assigns a performance tier (top / mid / low)
+    based on views relative to the channel average.
+    """
+    try:
+        # Get all selection log entries that haven't been updated yet
+        pending = (
+            sb.table("clip_selection_log")
+            .select("id, video_id, clip_index")
+            .is_("analytics_updated_at", "null")
+            .execute()
+        ).data or []
+
+        if not pending:
+            print("  No pending selection outcomes to update.")
+            return
+
+        # Get zernio_post_ids from clip_queue for matching
+        video_clip_pairs = [(r["video_id"], r["clip_index"]) for r in pending]
+        queue_rows = (
+            sb.table("clip_queue")
+            .select("video_id, clip_index, platform, zernio_post_id")
+            .eq("status", "posted")
+            .not_.is_("zernio_post_id", "null")
+            .execute()
+        ).data or []
+
+        # Build lookup: (video_id, clip_index) → best available analytics
+        best_analytics: dict[tuple, dict] = {}
+        for row in queue_rows:
+            key = (row["video_id"], row["clip_index"])
+            zpost = zernio_map.get(row["zernio_post_id"] or "")
+            analytics = (zpost or {}).get("analytics") or {}
+            if not analytics.get("lastUpdated"):
+                continue
+            prev = best_analytics.get(key, {})
+            if (analytics.get("views") or 0) >= (prev.get("views") or 0):
+                best_analytics[key] = analytics
+
+        # Compute channel average views for tier assignment
+        all_views = [a.get("views") or 0 for a in best_analytics.values() if a.get("views")]
+        avg_views = sum(all_views) / len(all_views) if all_views else 0
+
+        updated = 0
+        for rec in pending:
+            key = (rec["video_id"], rec["clip_index"])
+            a = best_analytics.get(key)
+            if not a:
+                continue
+            views = a.get("views") or 0
+            tier = "top" if views >= avg_views * 1.5 else ("low" if views < avg_views * 0.5 else "mid")
+            sb.table("clip_selection_log").update({
+                "views":               views,
+                "likes":               a.get("likes") or 0,
+                "engagement_rate":     round(a.get("engagementRate") or 0, 2),
+                "performance_tier":    tier,
+                "analytics_updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", rec["id"]).execute()
+            updated += 1
+
+        print(f"  Updated outcomes for {updated} clip selections.")
+    except Exception as e:
+        print(f"  Could not update selection outcomes: {e}")
+
+
+def build_decision_history() -> str:
+    """
+    Build a summary of Claude's past clip selection decisions and their outcomes
+    for injection into the intelligence brief.
+    """
+    try:
+        rows = (
+            sb.table("clip_selection_log")
+            .select("hook_type, topic_category, duration_seconds, views, performance_tier")
+            .not_.is_("performance_tier", "null")
+            .execute()
+        ).data or []
+
+        if len(rows) < 10:
+            return ""
+
+        # Aggregate by hook_type
+        from collections import defaultdict
+        hook_stats: dict[str, list] = defaultdict(list)
+        topic_stats: dict[str, list] = defaultdict(list)
+        tier_counts: dict[str, int] = defaultdict(int)
+
+        for r in rows:
+            if r.get("views") is not None:
+                hook_stats[r["hook_type"] or "unknown"].append(r["views"])
+                topic_stats[r["topic_category"] or "unknown"].append(r["views"])
+            tier_counts[r["performance_tier"] or "unknown"] += 1
+
+        lines = [f"CLAUDE'S PAST CLIP SELECTION OUTCOMES ({len(rows)} clips with data):"]
+
+        lines.append("\nBy hook type (avg views):")
+        for ht, views_list in sorted(hook_stats.items(), key=lambda x: -sum(x[1])/len(x[1])):
+            avg = round(sum(views_list) / len(views_list))
+            lines.append(f"  {ht}: {avg} avg views ({len(views_list)} clips)")
+
+        lines.append("\nBy topic (avg views):")
+        for tc, views_list in sorted(topic_stats.items(), key=lambda x: -sum(x[1])/len(x[1])):
+            avg = round(sum(views_list) / len(views_list))
+            lines.append(f"  {tc}: {avg} avg views ({len(views_list)} clips)")
+
+        total = sum(tier_counts.values())
+        lines.append(f"\nOverall: {tier_counts.get('top', 0)} top ({round(tier_counts.get('top', 0)/total*100)}%), "
+                     f"{tier_counts.get('mid', 0)} mid, {tier_counts.get('low', 0)} low performers")
+
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 def build_performance_dataset(clips: list[dict], zernio_map: dict[str, dict]) -> list[dict]:
@@ -192,12 +310,15 @@ def analyse_with_claude(rows: list[dict]) -> str:
         avg_e = round(sum(d["engagement"]) / len(d["engagement"]), 2)
         platform_text += f"  {p.upper()}: avg {avg_v} views, {avg_e}% engagement ({len(d['views'])} clips)\n"
 
+    decision_history = build_decision_history()
+    decision_block = f"\n{decision_history}\n" if decision_history else ""
+
     prompt = f"""You are a social media performance analyst for the Konnected Minds Podcast (Ghana-based business/entrepreneurship content).
 
 Below is real performance data from clips already posted across Instagram, TikTok, YouTube Shorts, and Facebook Reels.
 
 {dataset_text}
-{platform_text}
+{platform_text}{decision_block}
 
 Your task: write a concise CHANNEL INTELLIGENCE BRIEF that a clip selection AI will read before picking clips from a new episode. Focus on:
 
@@ -231,6 +352,9 @@ def main():
     print("Fetching clip metadata from Supabase...")
     clips = fetch_clip_metadata()
     print(f"  {len(clips)} posted clips with hooks found.")
+
+    print("Updating clip selection outcomes...")
+    update_selection_outcomes(zernio_map)
 
     print("Building performance dataset...")
     rows = build_performance_dataset(clips, zernio_map)

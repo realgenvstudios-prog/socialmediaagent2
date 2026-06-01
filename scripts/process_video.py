@@ -149,6 +149,73 @@ def transcribe(audio_path):
 
 # ── Claude clip selection ──────────────────────────────────────────────────────
 
+def _classify_hook_type(hook: str) -> str:
+    """Classify a hook into a type using simple heuristics (no API call)."""
+    h = hook.lower().strip()
+    if h.endswith("?"):
+        return "question"
+    if any(c in h for c in ["$", "¢", "£", "€", "%"]) or any(
+        w in h for w in ["million", "thousand", "cedis", "dollars", "percent", "years", "months"]
+    ):
+        return "stat"
+    if any(w in h for w in ["i was wrong", "i failed", "i lied", "i never", "i lost", "i made a mistake", "i regret"]):
+        return "confession"
+    if any(w in h for w in ["when i was", "the day i", "one day", "back when", "growing up", "i remember when"]):
+        return "story"
+    if any(w in h for w in ["stop ", "never ", "don't ", "you should", "you must", "the truth is", "nobody tells"]):
+        return "advice"
+    if any(w in h for w in ["god", "church", "jesus", "bible", "pastor", "prayer", "faith", "christian"]):
+        return "controversy"
+    if h.startswith("i ") or h.startswith("i'"):
+        return "provocative"
+    return "statement"
+
+
+def _classify_topic(hook: str) -> str:
+    """Classify a clip's topic from its hook using keyword matching."""
+    h = hook.lower()
+    if any(w in h for w in ["money", "rich", "broke", "income", "salary", "paid", "cedis", "invest", "wealth", "profit", "revenue", "afford"]):
+        return "money"
+    if any(w in h for w in ["business", "entrepreneur", "startup", "company", "brand", "client", "customer", "market", "product", "sell"]):
+        return "business"
+    if any(w in h for w in ["married", "wife", "husband", "relationship", "love", "date", "family", "children", "divorce", "partner"]):
+        return "relationships"
+    if any(w in h for w in ["god", "church", "jesus", "pray", "pastor", "faith", "christian", "gospel", "worship"]):
+        return "faith"
+    if any(w in h for w in ["school", "university", "degree", "education", "student", "teacher", "learn"]):
+        return "education"
+    if any(w in h for w in ["africa", "ghana", "nigerian", "kenyan", "continent", "accra", "lagos"]):
+        return "africa"
+    if any(w in h for w in ["discipline", "motivation", "success", "failure", "hustle", "grind", "mindset", "habit", "goal"]):
+        return "mindset"
+    return "personal"
+
+
+def _log_clip_selections(supabase, video_id: str, clips: list, durations: dict | None = None) -> None:
+    """Log Claude's clip selections with hook type and topic for future outcome tracking."""
+    try:
+        rows = []
+        for i, clip in enumerate(clips):
+            hook = clip.get("hook", "")
+            duration = None
+            if durations:
+                duration = durations.get(i)
+            elif clip.get("end_seconds") and clip.get("start_seconds"):
+                duration = round(clip["end_seconds"] - clip["start_seconds"])
+            rows.append({
+                "video_id":       video_id,
+                "clip_index":     i,
+                "hook":           hook[:200],
+                "duration_seconds": duration,
+                "hook_type":      _classify_hook_type(hook),
+                "topic_category": _classify_topic(hook),
+            })
+        supabase.table("clip_selection_log").upsert(rows, on_conflict="video_id,clip_index").execute()
+        print(f"  [Memory] Logged {len(rows)} clip selections to learning DB.")
+    except Exception as e:
+        print(f"  [Memory] Could not log selections: {e}")
+
+
 def _load_channel_intelligence(supabase) -> str:
     """Load the latest performance intelligence brief from Supabase, if available."""
     try:
@@ -696,6 +763,7 @@ def main():
                 sys.exit(1)
 
             _save_clip_plan(supabase_admin, args.video_id, all_clips)
+            _log_clip_selections(supabase_admin, args.video_id, all_clips)
 
             for i, clip in enumerate(all_clips):
                 print(f"  [{i+1}] {to_hhmmss(clip['start_seconds'])} → {to_hhmmss(clip['end_seconds'])} | {clip['hook'][:65]}")
