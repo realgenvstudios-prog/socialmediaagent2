@@ -149,7 +149,24 @@ def transcribe(audio_path):
 
 # ── Claude clip selection ──────────────────────────────────────────────────────
 
-def select_clips(anthropic_client, segments, video_title):
+def _load_channel_intelligence(supabase) -> str:
+    """Load the latest performance intelligence brief from Supabase, if available."""
+    try:
+        row = supabase.table("channel_intelligence").select("summary,stats").eq("id", "singleton").maybe_single().execute()
+        if row.data and row.data.get("summary"):
+            stats = row.data.get("stats") or {}
+            header = (
+                f"(Based on {stats.get('clips_analysed', '?')} clips — "
+                f"{stats.get('total_views', '?')} total views — "
+                f"updated {stats.get('generated_at', '?')[:10]})"
+            )
+            return f"{header}\n\n{row.data['summary']}"
+    except Exception:
+        pass
+    return ""
+
+
+def select_clips(anthropic_client, segments, video_title, supabase=None):
     """Ask Claude to pick 10-12 viral moments from the transcript."""
     lines = []
     for seg in segments:
@@ -161,9 +178,26 @@ def select_clips(anthropic_client, segments, video_title):
     if len(transcript_text) > 80000:
         transcript_text = transcript_text[:80000] + "\n...[truncated]"
 
+    intelligence = _load_channel_intelligence(supabase) if supabase else ""
+    intelligence_block = ""
+    if intelligence:
+        intelligence_block = f"""
+━━━ CHANNEL PERFORMANCE INTELLIGENCE ━━━
+
+This is real data from clips already posted on this channel. Use it to inform every decision you make below — hook style, topic selection, clip length, and platform captions.
+
+{intelligence}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+        print("  [Intelligence] Loaded channel performance brief into prompt.")
+    else:
+        print("  [Intelligence] No brief available yet — using base rules only.")
+
     prompt = f"""You are an expert viral short-form content strategist who deeply understands what makes people stop scrolling and watch a video clip all the way through to completion.
 
-Your job: analyze the provided timestamped podcast transcript and identify the 10 to 12 best, most high-impact moments to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.
+Your job: analyze the provided timestamped podcast transcript and identify the 10 to 12 best, most high-impact moments to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.{intelligence_block}
 
 Video title: {video_title}
 
@@ -654,7 +688,7 @@ def main():
 
             # ── Claude picks clips ─────────────────────────────────────────────
             print("\n[Claude] Selecting viral clips from transcript...")
-            all_clips = select_clips(anthropic_client, segments, args.title)
+            all_clips = select_clips(anthropic_client, segments, args.title, supabase_admin)
             print(f"  {len(all_clips)} clips selected")
 
             if not all_clips:

@@ -1,0 +1,31 @@
+name: Update Channel Intelligence
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 6am UTC daily — after overnight posting sessions
+  workflow_dispatch:        # manual trigger
+
+jobs:
+  analyse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic supabase requests python-dotenv
+
+      - name: Run intelligence update
+        run: python scripts/update_intelligence.py
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ZERNIO_API_KEY:     ${{ secrets.ZERNIO_API_KEY }}
+          ZERNIO_API_KEY_2:   ${{ secrets.ZERNIO_API_KEY_2 }}
