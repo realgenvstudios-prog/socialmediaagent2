@@ -583,59 +583,73 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     hook_overlay = _render_hook_overlay(hook, W, H) if hook and hook.strip() else None
     hook_end_t = 1.5  # seconds
 
-    # ── Step 2b: Pre-render subtitle images ───────────────────────────────────
-    font_size = max(60, H // 14)
+    # ── Step 2b: Pre-render karaoke subtitles — one image per word ───────────
+    # Active word = yellow, rest of chunk = white, no background box, thick stroke.
+    # One subtitle_data entry per word so the highlight updates word-by-word.
+    base_font_size = max(72, H // 11)
     font_candidates = [
-        "/Library/Fonts/SF-Pro.ttf",
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/Library/Fonts/SF-Pro.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFNS.ttf",
     ]
     font_path = next((p for p in font_candidates if os.path.exists(p)), None)
 
-    chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
     subtitle_data = []
-    max_text_w = int(W * 0.78)
+    tmp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    max_text_w = int(W * 0.92)
+    stroke_w   = 3
+    sub_y      = int(H * 0.60)  # lower-center — below typical face area
 
-    for chunk in chunks:
+    for ci in range(0, len(words), chunk_size):
+        chunk = words[ci:ci + chunk_size]
         if not chunk:
             continue
-        start = chunk[0]["start"]
-        end = chunk[-1]["end"]
-        text = " ".join(wd["word"] for wd in chunk).upper()
 
-        size = font_size
-        while size >= 30:
+        chunk_texts = [wd["word"].strip().upper() for wd in chunk]
+        full_text   = " ".join(chunk_texts)
+
+        # Shrink font until the full chunk fits on one line
+        size = base_font_size
+        while size >= 32:
             try:
                 font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
             except Exception:
                 font = ImageFont.load_default()
-            bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), text, font=font)
-            if bbox[2] - bbox[0] <= max_text_w:
+            bb = tmp_draw.textbbox((0, 0), full_text, font=font)
+            if bb[2] - bb[0] <= max_text_w:
                 break
             size -= 4
 
-        bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        pad_x = max(20, size // 4)
-        pad_y = max(16, size // 5)
-        radius = max(16, size // 4)
-        img_w = tw + pad_x * 2
-        img_h = th + pad_y * 2
+        # Measure each word width and the space width
+        sp_bb = tmp_draw.textbbox((0, 0), " ", font=font)
+        sp_w  = max(sp_bb[2] - sp_bb[0], size // 5)
+        word_dims = []
+        for t in chunk_texts:
+            bb = tmp_draw.textbbox((0, 0), t, font=font)
+            word_dims.append((bb[2] - bb[0], bb[3] - bb[1]))
 
-        img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle([0, 0, img_w - 1, img_h - 1], radius=radius, fill=(0, 0, 0, 255))
-        # Subtract bbox origin so text is truly centered — textbbox origin can be non-zero
-        draw.text((pad_x - bbox[0], pad_y - bbox[1]), text, font=font,
-                  fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0, 200))
+        total_w = sum(w for w, h in word_dims) + sp_w * max(0, len(chunk_texts) - 1)
+        line_h  = max((h for w, h in word_dims), default=size)
+        pad     = stroke_w + 6
+        img_w   = int(total_w) + pad * 2
+        img_h   = int(line_h)  + pad * 2
 
-        x_pos = max(10, (W - img_w) // 2)
-        y_pos = H - img_h - int(H * 0.13)
-        subtitle_data.append((start, end, img, x_pos, y_pos))
+        # One image per word — highlight rotates through the chunk
+        for wi, word_data in enumerate(chunk):
+            img  = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            x    = pad
+            for wj, (text, (ww, wh)) in enumerate(zip(chunk_texts, word_dims)):
+                color = (255, 226, 52, 255) if wj == wi else (255, 255, 255, 255)
+                draw.text((x, pad), text, font=font, fill=color,
+                          stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
+                x += ww + sp_w
+
+            x_pos = max(10, (W - img_w) // 2)
+            subtitle_data.append((word_data["start"], word_data["end"], img, x_pos, sub_y))
 
     # ── Step 3: Paste hook overlay + subtitles onto extracted frames ──────────
     frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
