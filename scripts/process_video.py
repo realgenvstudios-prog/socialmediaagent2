@@ -558,8 +558,8 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     except Exception:
         fps = 30.0
 
-    # ── Fast path: no words, just encode directly ──────────────────────────────
-    if not words:
+    # ── Fast path: no words AND no hook overlay → skip PIL entirely ───────────
+    if not words and not hook:
         subprocess.run([
             "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
             "-t", str(duration), "-vf", crop_scale,
@@ -642,22 +642,19 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     for fi, fname in enumerate(frame_files):
         t = fi / fps
         fp = os.path.join(frames_dir, fname)
-        modified = False
 
         # Hook overlay: show for first 1.5 seconds
         if hook_overlay and t < hook_end_t:
             frame = Image.open(fp).convert("RGBA")
             frame.paste(hook_overlay, (0, 0), hook_overlay)
             frame.convert("RGB").save(fp)
-            modified = True
 
-        # Subtitles: paste on top of whatever frame state we have
+        # Subtitles: paste on top of hook overlay if both are active
         for start, end, sub_img, x, y in subtitle_data:
             if start <= t < end:
                 frame = Image.open(fp).convert("RGBA")
                 frame.paste(sub_img, (x, y), sub_img)
                 frame.convert("RGB").save(fp)
-                modified = True
                 break
 
     # ── Step 4: Single encode — frames + audio from section ───────────────────
