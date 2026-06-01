@@ -455,7 +455,82 @@ def _smart_crop_x(video_path, start_s, duration):
         return None
 
 
-def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3):
+def _render_hook_overlay(hook_text: str, W: int, H: int) -> "Image":
+    """
+    Render a large bold hook text overlay for the first 1.5s of a clip.
+    White text with thick black stroke, centered horizontally, positioned
+    in the upper-center of the frame so it doesn't cover the speaker's face.
+    Returns a PIL RGBA Image ready to composite onto a frame.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Semi-transparent dark band across the top so text is always readable
+    band_h = H // 3
+    band = Image.new("RGBA", (W, band_h), (0, 0, 0, 160))
+    img.paste(band, (0, 0), band)
+
+    font_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/Library/Fonts/SF-Pro.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    font_path = next((p for p in font_candidates if os.path.exists(p)), None)
+
+    # Word-wrap: split hook into lines that fit within 88% of frame width
+    max_line_w = int(W * 0.88)
+    hook_upper = hook_text.upper()
+    raw_words = hook_upper.split()
+    lines: list[str] = []
+    current: list[str] = []
+
+    font_size = H // 10  # start large, shrink if needed
+    while font_size >= 36:
+        try:
+            font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+        except Exception:
+            font = ImageFont.load_default()
+
+        lines = []
+        current = []
+        for word in raw_words:
+            test = " ".join(current + [word])
+            bb = draw.textbbox((0, 0), test, font=font)
+            if bb[2] - bb[0] > max_line_w and current:
+                lines.append(" ".join(current))
+                current = [word]
+            else:
+                current.append(word)
+        if current:
+            lines.append(" ".join(current))
+
+        # Stop shrinking once it fits in ≤3 lines within the band
+        line_h = font_size + 8
+        if len(lines) <= 4 and len(lines) * line_h <= band_h - 20:
+            break
+        font_size -= 4
+
+    line_h = font_size + 10
+    total_text_h = len(lines) * line_h
+    y = max(12, (band_h - total_text_h) // 2)
+
+    for line in lines:
+        bb = draw.textbbox((0, 0), line, font=font)
+        tw = bb[2] - bb[0]
+        x = max(10, (W - tw) // 2)
+        # Thick black stroke first, then white text on top
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=4, stroke_fill=(0, 0, 0, 255))
+        y += line_h
+
+    return img
+
+
+def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3, hook=""):
     """
     Single encode pass: extract frames from section with crop/scale applied,
     paste subtitles with Pillow, then encode exactly once. Eliminates generational
@@ -503,8 +578,12 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         os.path.join(frames_dir, "frame_%06d.png"), "-y",
     ], check=True, capture_output=True)
 
-    # ── Step 2: Pre-render subtitle images ────────────────────────────────────
+    # ── Step 2a: Pre-render hook overlay (shown for first 1.5 seconds) ──────────
     from PIL import Image, ImageDraw, ImageFont
+    hook_overlay = _render_hook_overlay(hook, W, H) if hook and hook.strip() else None
+    hook_end_t = 1.5  # seconds
+
+    # ── Step 2b: Pre-render subtitle images ───────────────────────────────────
     font_size = max(60, H // 14)
     font_candidates = [
         "/Library/Fonts/SF-Pro.ttf",
@@ -558,16 +637,27 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         y_pos = H - img_h - int(H * 0.13)
         subtitle_data.append((start, end, img, x_pos, y_pos))
 
-    # ── Step 3: Paste subtitles onto extracted frames ─────────────────────────
+    # ── Step 3: Paste hook overlay + subtitles onto extracted frames ──────────
     frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
     for fi, fname in enumerate(frame_files):
         t = fi / fps
+        fp = os.path.join(frames_dir, fname)
+        modified = False
+
+        # Hook overlay: show for first 1.5 seconds
+        if hook_overlay and t < hook_end_t:
+            frame = Image.open(fp).convert("RGBA")
+            frame.paste(hook_overlay, (0, 0), hook_overlay)
+            frame.convert("RGB").save(fp)
+            modified = True
+
+        # Subtitles: paste on top of whatever frame state we have
         for start, end, sub_img, x, y in subtitle_data:
             if start <= t < end:
-                fp = os.path.join(frames_dir, fname)
                 frame = Image.open(fp).convert("RGBA")
                 frame.paste(sub_img, (x, y), sub_img)
                 frame.convert("RGB").save(fp)
+                modified = True
                 break
 
     # ── Step 4: Single encode — frames + audio from section ───────────────────
@@ -795,11 +885,12 @@ def main():
             try:
                 clip_words = words_for_clip(words, start_s, end_s) if words else []
                 print(f"  Cutting, cropping, burning subtitles ({len(clip_words)} words)...")
+                clip_hook = item.get("hook", "")
                 try:
-                    cut_and_subtitle(full_video_path, start_s, duration, clip_words, clip_path, i, tmpdir)
+                    cut_and_subtitle(full_video_path, start_s, duration, clip_words, clip_path, i, tmpdir, hook=clip_hook)
                 except Exception as e:
                     print(f"  cut_and_subtitle failed ({e}), retrying without subtitles...")
-                    cut_and_subtitle(full_video_path, start_s, duration, [], clip_path, i, tmpdir)
+                    cut_and_subtitle(full_video_path, start_s, duration, [], clip_path, i, tmpdir, hook=clip_hook)
 
                 clip_mb = os.path.getsize(clip_path) / 1024 / 1024
                 print(f"  Uploading ({clip_mb:.1f}MB)...")
