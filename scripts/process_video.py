@@ -573,12 +573,21 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     else:
         crop_scale = f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,{ken_burns},unsharp=3:3:0.5:3:3:0.0"
 
+    # Audio enhancement: cut low rumble, boost voice presence, normalise to -14 LUFS
+    audio_filter = (
+        "highpass=f=80,"
+        "equalizer=f=300:width_type=o:width=1:g=-3,"
+        "equalizer=f=3000:width_type=o:width=1.5:g=3,"
+        "loudnorm=I=-14:TP=-1:LRA=11"
+    )
+
     # ── Fast path: no words AND no hook overlay → skip PIL entirely ───────────
     if not words and not hook:
         subprocess.run([
             "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
             "-t", str(duration), "-vf", crop_scale,
             "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-af", audio_filter,
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
             "-pix_fmt", "yuv420p", output_path, "-y",
         ], check=True, capture_output=True)
@@ -694,6 +703,7 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         "-ss", str(offset_seconds), "-t", str(duration), "-i", section_path,
         "-map", "0:v", "-map", "1:a",
         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-af", audio_filter,
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         "-pix_fmt", "yuv420p", "-shortest",
