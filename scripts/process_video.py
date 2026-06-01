@@ -278,25 +278,35 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
 
 2. TARGET LENGTH — Target 45 to 65 seconds per clip. This is the proven sweet spot for completion rate across all 4 platforms. Never go below 30 seconds or above 90 seconds. Tighter is better. The clip must start precisely on the opening word of the hook and end the moment the idea concludes — do not trail off into the next topic or filler.
 
-3. THE HOOK (first 3 seconds) — This is the single most important part. The algorithm decides whether to push a clip based on how many people watch past 3 seconds. A good hook is one of:
-  • A shocking or counterintuitive statement ("I made $0 from that viral video")
-  • A question that creates instant curiosity ("Why did she never get paid?")
-  • A cliffhanger opener ("What happened next changed everything")
-  • A bold claim or confession ("I was wrong about this for 10 years")
-  Never start a clip mid-thought, with filler words ("So...", "Um...", "Like I said"), or with slow context-setting.
+3. THE SCROLL-STOP TEST — Before selecting any clip, apply this test to its opening sentence: imagine someone in a noisy room, half-watching their phone, thumb already moving to swipe. Would they freeze on THIS specific sentence? If the answer is anything less than "yes, immediately" — reject it and find a better moment. Generic wisdom fails this test. Setup sentences fail this test. Anything that needs context to land fails this test.
 
-4. CONTENT COHESION — Each clip must contain ONE complete self-contained idea, story, or revelation. A viewer who has never heard of this podcast must instantly understand the context. Prioritise moments that are:
-  • Emotionally charged (anger, surprise, inspiration, heartbreak)
-  • Story-driven with a clear arc (setup → tension → payoff)
-  • Controversial or opinion-driven (sparks comments and shares)
-  • Deeply relatable or universally human
-  • Revealing something people didn't know or expect
+  A hook that passes the test is one of these:
+  • A specific number or amount that surprises ("She lost 300,000 cedis in one month")
+  • A direct personal confession or failure ("I almost destroyed my own company doing this")
+  • A statement that makes the audience choose a side ("Most African entrepreneurs will never scale and it is their own fault")
+  • A counter-intuitive reversal of something everyone believes ("Working harder is exactly what keeps you broke")
+  • A story opening with immediate tension ("The day I fired my best friend was the day the business started growing")
+  • A question with an answer the viewer desperately wants ("Why do the most disciplined people still fail?")
 
-5. ALGORITHM SIGNALS — Pick moments mathematically likely to drive:
-  • Replays (a punchline, stat, or twist people want to hear again)
-  • Shares (something so good people want to send it to a friend)
-  • Saves (practical insight or advice people want to come back to)
-  • Comments (a take that people agree or disagree with strongly)
+  AUTOMATIC REJECTION — Never start a clip on:
+  • Filler words: "So...", "Um...", "You know...", "Like I said...", "Basically..."
+  • Slow context: "Today we're going to talk about...", "I want to tell you something about..."
+  • Generic advice that could apply to anyone: "You need to believe in yourself", "Hard work pays off"
+  • A mid-thought that requires the previous sentence to make sense
+  • A compliment or pleasantry: "That's a great question", "Absolutely, I agree"
+
+4. CONTENT COHESION — Each clip must contain ONE complete self-contained idea, story, or revelation. A viewer who has never heard of this podcast must instantly understand the context. Strongly prioritise moments that are:
+  • A specific number, amount, or statistic that reveals something surprising
+  • A personal failure, mistake, or lesson the speaker learned the hard way
+  • A take that the Konnected Minds audience (Ghana/Africa, entrepreneurship, business, faith, ambition) will passionately agree or disagree with
+  • A story with a clear arc that resolves within the clip
+  • A revelation that reframes how the audience thinks about something they already believe
+
+5. ALGORITHM SIGNALS — Pick moments that will drive measurable actions:
+  • Comments: the audience needs to argue about it, share their own story, or tag someone
+  • Shares: the clip must feel like "I need to send this to someone right now"
+  • Saves: practical insight or a hard truth people want to return to
+  • Replays: a punchline, a stat, or a twist delivered so well they want to hear it again
 
 6. TIMESTAMP CONVERSION — Each transcript line shows [MM:SS-MM:SS] format. Convert the start time of your chosen clip to raw integer seconds for start_seconds, and the end time to raw integer seconds for end_seconds. Example: a clip starting at 02:05 and ending at 03:07 becomes start_seconds: 125, end_seconds: 187.
 
