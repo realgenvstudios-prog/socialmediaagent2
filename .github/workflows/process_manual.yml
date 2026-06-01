@@ -57,9 +57,9 @@ jobs:
       - name: Process video
         run: |
           python scripts/process_video.py \
-            --video_id "$INPUT_VIDEO_ID" \
-            --url "$INPUT_VIDEO_URL" \
-            --title "$INPUT_VIDEO_TITLE"
+            --video_id="$INPUT_VIDEO_ID" \
+            --url="$INPUT_VIDEO_URL" \
+            --title="$INPUT_VIDEO_TITLE"
         env:
           INPUT_VIDEO_ID: ${{ github.event.inputs.video_id }}
           INPUT_VIDEO_URL: ${{ github.event.inputs.video_url }}
