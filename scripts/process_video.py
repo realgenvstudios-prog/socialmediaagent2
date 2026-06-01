@@ -540,11 +540,24 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
 
     # Smart crop: center on detected face, fall back to dead-center if no face found
     face_result = _smart_crop_x(section_path, offset_seconds, duration)
+
+    # Ken Burns zoom-in: scale 5% oversized, then animate crop from full frame (t=0)
+    # to tight center (t=duration). Pure ffmpeg expression — no per-frame Python cost.
+    # At t=0: crop covers full 756x1344 → content at 1.0x zoom
+    # At t=end: crop covers 720x1280 from center → content at 1.05x zoom
+    D = max(duration, 0.1)
+    ken_burns = (
+        f"scale=756:1344:flags=lanczos,"
+        f"crop='756-36*min(t/{D:.3f},1)':'1344-64*min(t/{D:.3f},1)':"
+        f"'(756-ow)/2':'(1344-oh)/2',"
+        f"scale=720:1280:flags=lanczos"
+    )
+
     if face_result:
         x_off, crop_w, frame_h = face_result
-        crop_scale = f"crop={crop_w}:{frame_h}:{x_off}:0,scale=720:1280:flags=lanczos,unsharp=3:3:0.5:3:3:0.0"
+        crop_scale = f"crop={crop_w}:{frame_h}:{x_off}:0,{ken_burns},unsharp=3:3:0.5:3:3:0.0"
     else:
-        crop_scale = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=720:1280:flags=lanczos,unsharp=3:3:0.5:3:3:0.0"
+        crop_scale = f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,{ken_burns},unsharp=3:3:0.5:3:3:0.0"
 
     # Probe source FPS
     probe = subprocess.run(
