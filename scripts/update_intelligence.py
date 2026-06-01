@@ -158,8 +158,8 @@ def analyse_with_claude(rows: list[dict]) -> str:
     if not rows:
         return "No synced performance data available yet."
 
-    top     = rows[:30]
-    bottom  = rows[-20:] if len(rows) >= 20 else []
+    top     = rows[:20]
+    bottom  = rows[-10:] if len(rows) >= 15 else []
 
     dataset_text = "TOP PERFORMING CLIPS:\n"
     for i, r in enumerate(top, 1):
@@ -210,9 +210,12 @@ Your task: write a concise CHANNEL INTELLIGENCE BRIEF that a clip selection AI w
 
 Be specific and data-driven. Reference actual hook examples from the data. This brief will be injected directly into Claude's prompt so write it as clear, directive guidance — not a report."""
 
+    # Haiku is used here intentionally — this is structured analytical work
+    # (pattern extraction from a data table), not creative generation.
+    # Sonnet is reserved for clip selection where output quality is critical.
     msg = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1400,
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
@@ -236,6 +239,22 @@ def main():
     if len(rows) < 5:
         print("  Not enough synced data yet — skipping Claude analysis.")
         return
+
+    # Skip if brief is recent and dataset hasn't grown significantly
+    try:
+        existing = sb.table("channel_intelligence").select("stats,updated_at").eq("id", "singleton").maybe_single().execute()
+        if existing.data:
+            prev_count = (existing.data.get("stats") or {}).get("clips_analysed", 0)
+            updated_at = existing.data.get("updated_at", "")
+            if updated_at:
+                age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))).days
+                new_clips = len(rows) - prev_count
+                if age_days < 3 and new_clips < 10:
+                    print(f"  Brief is {age_days}d old with only {new_clips} new clips — skipping to save credits.")
+                    return
+                print(f"  Brief is {age_days}d old, {new_clips} new clips since last run — regenerating.")
+    except Exception:
+        pass
 
     # Compute quick stats to save alongside the summary
     stats = {
