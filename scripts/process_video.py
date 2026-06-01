@@ -268,60 +268,83 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
 
 def _smart_crop_x(video_path, start_s, duration):
     """
-    Sample frames within the clip, detect faces using multiple cascades, and
-    return the optimal horizontal crop offset. Falls back to variance-based
-    side detection (which side of the frame has the speaker) if no face found.
+    Detect the speaker's face using MediaPipe (deep learning, much more accurate
+    than Haar cascades for real-world podcast footage). Falls back to Haar cascades
+    if MediaPipe isn't available, then to pixel-variance side detection as a last resort.
     Returns (x_offset, crop_w, frame_h) or None to fall back to center crop.
     """
     try:
         import cv2
-        cascades = [
-            cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml"),
-            cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml"),
-            cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml"),
-        ]
+        import numpy as np
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return None
 
         frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        crop_w = frame_h * 9 // 16
-        min_face = max(20, frame_h // 10)
+        crop_w  = frame_h * 9 // 16
 
-        face_centers = []
-        frames_sampled = []
-        n = 10
+        face_centers: list[int] = []
+        frames_sampled: list = []
+        n = 12
+
+        # ── Attempt 1: MediaPipe FaceDetection (deep learning, handles angles/lighting) ──
+        mp_detector = None
+        try:
+            import mediapipe as mp
+            mp_detector = mp.solutions.face_detection.FaceDetection(
+                model_selection=1,       # optimised for faces up to 5m — good for wide podcast shots
+                min_detection_confidence=0.4,
+            )
+        except Exception:
+            pass
+
         for i in range(1, n + 1):
             cap.set(cv2.CAP_PROP_POS_MSEC, (start_s + duration * i / (n + 1)) * 1000)
             ret, frame = cap.read()
             if not ret:
                 continue
             frames_sampled.append(frame)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            for cascade in cascades:
-                faces = cascade.detectMultiScale(
-                    gray, scaleFactor=1.1, minNeighbors=2, minSize=(min_face, min_face)
-                )
-                if len(faces) > 0:
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    face_centers.append(x + w // 2)
-                    break
+
+            if mp_detector is not None:
+                rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = mp_detector.process(rgb)
+                if results.detections:
+                    best = max(results.detections, key=lambda d: d.score[0])
+                    bb   = best.location_data.relative_bounding_box
+                    cx   = int((bb.xmin + bb.width / 2) * frame_w)
+                    face_centers.append(cx)
+            else:
+                # ── Attempt 2: Haar cascades fallback ──
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                min_sz = max(20, frame_h // 10)
+                for xml in ["haarcascade_frontalface_default.xml",
+                            "haarcascade_frontalface_alt2.xml",
+                            "haarcascade_profileface.xml"]:
+                    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + xml)
+                    faces = cascade.detectMultiScale(gray, 1.1, 2, minSize=(min_sz, min_sz))
+                    if len(faces) > 0:
+                        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                        face_centers.append(x + w // 2)
+                        break
+
+        if mp_detector is not None:
+            mp_detector.close()
         cap.release()
 
         if face_centers:
             avg_cx = int(sum(face_centers) / len(face_centers))
-            x_off = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
+            x_off  = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
             return x_off, crop_w, frame_h
 
-        # No face detected — use pixel variance to find which side has the speaker.
-        # In a podcast the host/guest is left or right of center; the mic is in the middle.
+        # ── Attempt 3: variance-based side detection ──
+        # In a podcast the mic/table is dead-centre; the speakers are left or right.
         if frames_sampled:
-            import numpy as np
-            third = frame_w // 3
-            left_var = float(np.var([f[:, :third] for f in frames_sampled]))
-            right_var = float(np.var([f[:, 2 * third:] for f in frames_sampled]))
-            cx = third // 2 if left_var > right_var else 2 * third + third // 2
+            third     = frame_w // 3
+            left_var  = float(np.var(np.array([f[:, :third]       for f in frames_sampled], dtype=np.float32)))
+            right_var = float(np.var(np.array([f[:, 2 * third:]   for f in frames_sampled], dtype=np.float32)))
+            cx    = third // 2 if left_var > right_var else 2 * third + third // 2
             x_off = max(0, min(cx - crop_w // 2, frame_w - crop_w))
             return x_off, crop_w, frame_h
 
