@@ -130,12 +130,13 @@ const FILTER_COLOR: Record<StatusFilter, string> = {
 export default async function ClipsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string }>
+  searchParams: Promise<{ status?: string; show?: string }>
 }) {
-  const { status = "all" } = await searchParams
+  const { status = "all", show } = await searchParams
   const activeFilter: StatusFilter = STATUS_FILTERS.includes(status as StatusFilter)
     ? (status as StatusFilter)
     : "all"
+  const showCompleted = show === "completed"
 
   const episodes = await getEpisodes()
 
@@ -143,8 +144,15 @@ export default async function ClipsPage({
   const liveCount    = allClips.filter(c => getClipStatus(c.platforms) === "live").length
   const pendingCount = allClips.filter(c => getClipStatus(c.platforms) === "pending").length
 
-  // Apply filter — hide clips that don't match, hide episodes with no remaining clips
-  const filteredEpisodes = episodes
+  // An episode is "fully completed" when every clip is live across all platforms
+  const isFullyCompleted = (ep: Episode) =>
+    ep.clips.every(c => getClipStatus(c.platforms) === "live")
+
+  const completedEpisodes = episodes.filter(isFullyCompleted)
+  const activeEpisodes    = episodes.filter(ep => !isFullyCompleted(ep))
+
+  // Apply status filter to active episodes only (completed episodes are hidden unless toggled)
+  const filteredEpisodes = activeEpisodes
     .map(ep => ({
       ...ep,
       clips: activeFilter === "all"
@@ -291,6 +299,44 @@ export default async function ClipsPage({
           })}
         </div>
       ))}
+
+      {/* Completed episodes — hidden by default, shown when toggled */}
+      {completedEpisodes.length > 0 && (
+        <div style={{ marginTop: "3rem", paddingTop: "2rem", borderTop: "1px solid var(--border)" }}>
+          <a
+            href={showCompleted
+              ? (activeFilter === "all" ? "/queue" : `/queue?status=${activeFilter}`)
+              : (activeFilter === "all" ? "/queue?show=completed" : `/queue?status=${activeFilter}&show=completed`)}
+            style={{
+              fontSize: "12px", color: "var(--muted)", textDecoration: "none",
+              display: "inline-flex", alignItems: "center", gap: "6px",
+            }}
+          >
+            <span style={{ fontSize: "10px" }}>{showCompleted ? "▲" : "▼"}</span>
+            {showCompleted ? "Hide" : "Show"} {completedEpisodes.length} fully completed episode{completedEpisodes.length !== 1 ? "s" : ""}
+          </a>
+
+          {showCompleted && completedEpisodes.map(episode => (
+            <div key={episode.video_id} style={{ marginTop: "1.5rem", opacity: 0.5 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", paddingBottom: "0.75rem", borderBottom: "1px solid var(--border)" }}>
+                <div style={{ width: "80px", height: "45px", overflow: "hidden", background: "var(--surface)", flexShrink: 0 }}>
+                  <img
+                    src={`https://img.youtube.com/vi/${episode.video_id}/hqdefault.jpg`}
+                    alt=""
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                  />
+                </div>
+                <div>
+                  <p style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>{episode.title}</p>
+                  <p style={{ fontSize: "11px", color: "var(--faint)" }}>
+                    {episode.clips.length} clips · all live
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
