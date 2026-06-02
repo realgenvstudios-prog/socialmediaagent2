@@ -151,8 +151,10 @@ export default async function ClipsPage({
   const completedEpisodes = episodes.filter(isFullyCompleted)
   const activeEpisodes    = episodes.filter(ep => !isFullyCompleted(ep))
 
-  // Apply status filter to active episodes only (completed episodes are hidden unless toggled)
-  const filteredEpisodes = activeEpisodes
+  // "all" hides completed episodes (they go to the toggle below).
+  // Any specific status filter searches across all episodes so live/failed clips are findable.
+  const episodesToSearch = activeFilter === "all" ? activeEpisodes : episodes
+  const filteredEpisodes = episodesToSearch
     .map(ep => ({
       ...ep,
       clips: activeFilter === "all"
