@@ -83,6 +83,7 @@ export default function ClipPreview({
               src={src}
               controls
               autoPlay
+              playsInline
               style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
             />
             <button
