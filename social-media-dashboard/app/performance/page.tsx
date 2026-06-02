@@ -20,11 +20,31 @@ const PLATFORM_LABEL: Record<string, string> = {
   facebook:  "Facebook Reels",
 }
 
-const ZERNIO_KEY: Record<string, string> = {
-  instagram: process.env.ZERNIO_API_KEY!,
-  tiktok:    process.env.ZERNIO_API_KEY!,
-  youtube:   process.env.ZERNIO_API_KEY_2!,
-  facebook:  process.env.ZERNIO_API_KEY_2!,
+const ZERNIO_KEYS = [
+  process.env.ZERNIO_API_KEY!,
+  process.env.ZERNIO_API_KEY_2!,
+]
+
+interface ZernioAnalytics {
+  views?: number
+  likes?: number
+  comments?: number
+  shares?: number
+  saves?: number
+  impressions?: number
+  reach?: number
+  engagementRate?: number
+  lastUpdated?: string | null
+}
+
+interface ZernioPost {
+  _id: string
+  latePostId: string
+  status: string
+  syncStatus: string
+  content?: string
+  platformPostUrl?: string | null
+  analytics?: ZernioAnalytics
 }
 
 async function getPosts(platform: string) {
@@ -33,9 +53,9 @@ async function getPosts(platform: string) {
     .select("id, video_id, clip_index, platform, caption, posted_at, zernio_post_id")
     .eq("status", "posted")
     .not("zernio_post_id", "is", null)
-    .lt("clip_index", 50) // exclude test clips
+    .lt("clip_index", 50)
     .order("posted_at", { ascending: false })
-    .limit(100)
+    .limit(200)
 
   if (platform !== "all") query = query.eq("platform", platform)
 
@@ -43,17 +63,35 @@ async function getPosts(platform: string) {
   return data ?? []
 }
 
-async function fetchZernioStatus(postId: string, platform: string) {
-  try {
-    const res = await fetch(`https://zernio.com/api/v1/analytics?postId=${postId}`, {
-      headers: { Authorization: `Bearer ${ZERNIO_KEY[platform]}` },
-      next: { revalidate: 60 }, // cache 60s
-    })
-    if (!res.ok) return null
-    return await res.json()
-  } catch {
-    return null
-  }
+// Fetch all pages from the aggregate endpoint and build a latePostId → post map.
+// This is the only endpoint that returns real synced analytics for all platforms.
+async function fetchZernioAnalyticsMap(): Promise<Map<string, ZernioPost>> {
+  const map = new Map<string, ZernioPost>()
+
+  await Promise.all(ZERNIO_KEYS.map(async (key) => {
+    let page = 1
+    while (true) {
+      try {
+        const res = await fetch(`https://zernio.com/api/v1/analytics?page=${page}`, {
+          headers: { Authorization: `Bearer ${key}` },
+          next: { revalidate: 60 },
+        })
+        if (!res.ok) break
+        const data = await res.json()
+        const posts: ZernioPost[] = Array.isArray(data.posts) ? data.posts : []
+        for (const post of posts) {
+          if (post.latePostId) map.set(post.latePostId, post)
+        }
+        const pagination = data.pagination as { page: number; pages: number } | undefined
+        if (!pagination || page >= pagination.pages) break
+        page++
+      } catch {
+        break
+      }
+    }
+  }))
+
+  return map
 }
 
 function fmt(n: number) {
@@ -82,16 +120,15 @@ export default async function PerformancePage({
   const { platform = "all" } = await searchParams
   const activePlatform = PLATFORMS.includes(platform as Platform) ? platform : "all"
 
-  const posts = await getPosts(activePlatform)
+  const [posts, zernioMap] = await Promise.all([
+    getPosts(activePlatform),
+    fetchZernioAnalyticsMap(),
+  ])
 
-  // Fetch Zernio status for all posts in parallel (batched to avoid hammering)
-  const zernioData = await Promise.all(
-    posts.map(p => fetchZernioStatus(p.zernio_post_id, p.platform))
-  )
-
-  const enriched = posts.map((p, i) => ({
+  type EnrichedPost = (typeof posts)[number] & { zernio: ZernioPost | null }
+  const enriched: EnrichedPost[] = posts.map(p => ({
     ...p,
-    zernio: zernioData[i],
+    zernio: (p.zernio_post_id != null ? zernioMap.get(p.zernio_post_id) : undefined) ?? null,
   }))
 
   const totalViews    = enriched.reduce((s, p) => s + (p.zernio?.analytics?.views ?? 0), 0)

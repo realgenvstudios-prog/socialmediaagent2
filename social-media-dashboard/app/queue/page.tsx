@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase"
+import ClipPreview from "@/components/ClipPreview"
 
 export const revalidate = 30
 
@@ -23,6 +24,7 @@ type ClipEntry = {
   video_id: string
   clip_index: number
   caption: string
+  public_url: string
   created_at: string
   posted_at: string
   platforms: Record<string, string>
@@ -38,7 +40,7 @@ async function getEpisodes(): Promise<Episode[]> {
   const [{ data: queueData }, { data: videoData }] = await Promise.all([
     supabase
       .from("clip_queue")
-      .select("video_id, clip_index, platform, status, caption, posted_at, created_at")
+      .select("video_id, clip_index, platform, status, caption, public_url, posted_at, created_at")
       .order("created_at", { ascending: false })
       .limit(500),
     supabase
@@ -58,6 +60,7 @@ async function getEpisodes(): Promise<Episode[]> {
         video_id: row.video_id,
         clip_index: row.clip_index,
         caption: row.caption ?? "",
+        public_url: row.public_url ?? "",
         created_at: row.created_at,
         posted_at: row.posted_at ?? "",
         platforms: {},
@@ -237,14 +240,11 @@ export default async function ClipsPage({
                   alignItems: "start",
                 }}
               >
-                {/* Clip thumbnail (portrait crop) */}
-                <div style={{ width: "32px", height: "57px", overflow: "hidden", background: "var(--surface)", flexShrink: 0, marginTop: "2px" }}>
-                  <img
-                    src={`https://img.youtube.com/vi/${clip.video_id}/hqdefault.jpg`}
-                    alt=""
-                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center", display: "block" }}
-                  />
-                </div>
+                {/* Clip preview — click thumbnail to open full-size video */}
+                <ClipPreview
+                  src={clip.public_url}
+                  poster={`https://img.youtube.com/vi/${clip.video_id}/hqdefault.jpg`}
+                />
 
                 {/* Caption + platform badges */}
                 <div style={{ minWidth: 0 }}>
