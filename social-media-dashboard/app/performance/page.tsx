@@ -47,19 +47,40 @@ interface ZernioPost {
   analytics?: ZernioAnalytics
 }
 
-async function getPosts(platform: string) {
-  let query = supabase
-    .from("clip_queue")
-    .select("id, video_id, clip_index, platform, caption, posted_at, zernio_post_id")
-    .eq("status", "posted")
-    .not("zernio_post_id", "is", null)
-    .lt("clip_index", 50)
-    .order("posted_at", { ascending: false })
+interface ClipRow {
+  id: string
+  video_id: string
+  clip_index: number
+  platform: string
+  caption: string | null
+  posted_at: string | null
+  zernio_post_id: string | null
+}
 
-  if (platform !== "all") query = query.eq("platform", platform)
-
-  const { data } = await query
-  return data ?? []
+async function getPosts(platform: string): Promise<ClipRow[]> {
+  // Paginate in batches of 1000 so the count can never silently truncate analytics.
+  // PostgREST has a server-side default row cap; a single query will miss rows once
+  // the table grows past it. The loop guarantees every posted row is fetched.
+  const PAGE = 1000
+  const all: ClipRow[] = []
+  let from = 0
+  while (true) {
+    let query = supabase
+      .from("clip_queue")
+      .select("id, video_id, clip_index, platform, caption, posted_at, zernio_post_id")
+      .eq("status", "posted")
+      .not("zernio_post_id", "is", null)
+      .lt("clip_index", 50)
+      .order("posted_at", { ascending: false })
+      .range(from, from + PAGE - 1)
+    if (platform !== "all") query = query.eq("platform", platform)
+    const { data } = await query
+    if (!data || data.length === 0) break
+    all.push(...(data as ClipRow[]))
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return all
 }
 
 // Fetch all pages from the aggregate endpoint and build a latePostId → post map.
@@ -124,7 +145,7 @@ export default async function PerformancePage({
     fetchZernioAnalyticsMap(),
   ])
 
-  type EnrichedPost = (typeof posts)[number] & { zernio: ZernioPost | null }
+  type EnrichedPost = ClipRow & { zernio: ZernioPost | null }
   const enriched: EnrichedPost[] = posts.map(p => ({
     ...p,
     zernio: (p.zernio_post_id != null ? zernioMap.get(p.zernio_post_id) : undefined) ?? null,
@@ -279,7 +300,7 @@ export default async function PerformancePage({
                     {isLive ? "● Live" : hasFailed ? "● Failed" : "● Pending"}
                   </span>
                   <span style={{ fontSize: "11px", color: "var(--faint)" }}>
-                    · Clip {post.clip_index} · {timeAgo(post.posted_at)}
+                    · Clip {post.clip_index} · {timeAgo(post.posted_at ?? "")}
                   </span>
                 </div>
 
