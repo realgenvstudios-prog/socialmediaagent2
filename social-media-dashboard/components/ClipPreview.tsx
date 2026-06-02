@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 
 export default function ClipPreview({
   src,
@@ -10,6 +10,18 @@ export default function ClipPreview({
   poster: string
 }) {
   const [open, setOpen] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  // Safari requires a direct .play() call after the element mounts —
+  // the click that opened the modal doesn't propagate as a user gesture
+  // to the video element created in the same tick.
+  useEffect(() => {
+    if (open && videoRef.current) {
+      videoRef.current.play().catch(() => {
+        // Blocked (e.g. no user gesture yet) — controls still visible, user can click play
+      })
+    }
+  }, [open])
 
   return (
     <>
@@ -36,7 +48,6 @@ export default function ClipPreview({
           alt=""
           style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
         />
-        {/* Play icon overlay */}
         <div style={{
           position: "absolute", inset: 0,
           display: "flex", alignItems: "center", justifyContent: "center",
@@ -80,9 +91,9 @@ export default function ClipPreview({
             }}
           >
             <video
+              ref={videoRef}
               src={src}
               controls
-              autoPlay
               playsInline
               style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
             />
