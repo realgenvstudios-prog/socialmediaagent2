@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef } from "react"
 
 export default function ClipPreview({
   src,
@@ -12,22 +12,25 @@ export default function ClipPreview({
   const [open, setOpen] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
 
-  // Safari requires a direct .play() call after the element mounts —
-  // the click that opened the modal doesn't propagate as a user gesture
-  // to the video element created in the same tick.
-  useEffect(() => {
-    if (open && videoRef.current) {
-      videoRef.current.play().catch(() => {
-        // Blocked (e.g. no user gesture yet) — controls still visible, user can click play
-      })
+  // Called directly inside a click handler → counts as a user gesture in Safari
+  function handleOpen() {
+    setOpen(true)
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0
+      videoRef.current.play().catch(() => {})
     }
-  }, [open])
+  }
+
+  function handleClose() {
+    if (videoRef.current) videoRef.current.pause()
+    setOpen(false)
+  }
 
   return (
     <>
       {/* Thumbnail — click to open */}
       <button
-        onClick={() => setOpen(true)}
+        onClick={handleOpen}
         style={{
           width: "54px",
           height: "96px",
@@ -69,49 +72,49 @@ export default function ClipPreview({
         </div>
       </button>
 
-      {/* Modal overlay */}
-      {open && (
+      {/* Modal — always in DOM so videoRef is valid when handleOpen fires */}
+      <div
+        onClick={handleClose}
+        style={{
+          display: open ? "flex" : "none",
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: "rgba(0,0,0,0.85)",
+          alignItems: "center", justifyContent: "center",
+        }}
+      >
         <div
-          onClick={() => setOpen(false)}
+          onClick={e => e.stopPropagation()}
           style={{
-            position: "fixed", inset: 0, zIndex: 1000,
-            background: "rgba(0,0,0,0.85)",
-            display: "flex", alignItems: "center", justifyContent: "center",
+            width: "min(340px, 90vw)",
+            aspectRatio: "9/16",
+            background: "#000",
+            borderRadius: "12px",
+            overflow: "hidden",
+            position: "relative",
           }}
         >
-          <div
-            onClick={e => e.stopPropagation()}
+          <video
+            ref={videoRef}
+            src={src}
+            controls
+            playsInline
+            preload="metadata"
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+          />
+          <button
+            onClick={handleClose}
             style={{
-              width: "min(340px, 90vw)",
-              aspectRatio: "9/16",
-              background: "#000",
-              borderRadius: "12px",
-              overflow: "hidden",
-              position: "relative",
+              position: "absolute", top: "10px", right: "10px",
+              background: "rgba(0,0,0,0.6)", border: "none",
+              color: "#fff", borderRadius: "50%",
+              width: "28px", height: "28px",
+              fontSize: "16px", cursor: "pointer", lineHeight: 1,
             }}
           >
-            <video
-              ref={videoRef}
-              src={src}
-              controls
-              playsInline
-              style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-            />
-            <button
-              onClick={() => setOpen(false)}
-              style={{
-                position: "absolute", top: "10px", right: "10px",
-                background: "rgba(0,0,0,0.6)", border: "none",
-                color: "#fff", borderRadius: "50%",
-                width: "28px", height: "28px",
-                fontSize: "16px", cursor: "pointer", lineHeight: 1,
-              }}
-            >
-              ×
-            </button>
-          </div>
+            ×
+          </button>
         </div>
-      )}
+      </div>
     </>
   )
 }
