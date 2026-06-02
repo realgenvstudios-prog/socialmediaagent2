@@ -398,7 +398,7 @@ def _smart_crop_x(video_path, start_s, duration):
 
         face_centers: list[int] = []
         frames_sampled: list = []
-        n = 12
+        n = 20  # more samples → better coverage when camera cuts between speakers
 
         # ── Attempt 1: MediaPipe FaceDetection (deep learning, handles angles/lighting) ──
         mp_detector = None
@@ -406,7 +406,7 @@ def _smart_crop_x(video_path, start_s, duration):
             import mediapipe as mp
             mp_detector = mp.solutions.face_detection.FaceDetection(
                 model_selection=1,       # optimised for faces up to 5m — good for wide podcast shots
-                min_detection_confidence=0.4,
+                min_detection_confidence=0.3,  # lower threshold catches faces in wider shots
             )
         except Exception:
             pass
@@ -445,8 +445,18 @@ def _smart_crop_x(video_path, start_s, duration):
         cap.release()
 
         if face_centers:
-            avg_cx = sorted(face_centers)[len(face_centers) // 2]
-            x_off  = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
+            # When two speakers are far apart, pick the dominant cluster (most screen time)
+            # rather than the median, which can land between them and show neither face.
+            spread = max(face_centers) - min(face_centers)
+            if spread > crop_w * 0.5 and len(face_centers) >= 4:
+                mid = (max(face_centers) + min(face_centers)) / 2
+                left_cluster  = [c for c in face_centers if c <= mid]
+                right_cluster = [c for c in face_centers if c >  mid]
+                dominant = left_cluster if len(left_cluster) >= len(right_cluster) else right_cluster
+                avg_cx = int(sum(dominant) / len(dominant))
+            else:
+                avg_cx = sorted(face_centers)[len(face_centers) // 2]
+            x_off = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
             return x_off, crop_w, frame_h
 
         # ── Attempt 3: variance-based side detection ──
@@ -557,7 +567,10 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     tmp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     max_text_w = int(W * 0.92)
     stroke_w   = 3
-    sub_y      = int(H * 0.60)  # lower-center — below typical face area
+    # Position subtitle so its bottom edge is at ~65% from top.
+    # Anything lower gets covered by platform UI (like/comment buttons, caption, gesture bar).
+    max_sub_h  = base_font_size + 2 * (stroke_w + 6)
+    sub_y      = int(H * 0.65) - max_sub_h
 
     for ci in range(0, len(words), chunk_size):
         chunk = words[ci:ci + chunk_size]
