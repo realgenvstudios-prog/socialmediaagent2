@@ -445,7 +445,7 @@ def _smart_crop_x(video_path, start_s, duration):
         cap.release()
 
         if face_centers:
-            avg_cx = int(sum(face_centers) / len(face_centers))
+            avg_cx = sorted(face_centers)[len(face_centers) // 2]
             x_off  = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
             return x_off, crop_w, frame_h
 
@@ -464,80 +464,6 @@ def _smart_crop_x(video_path, start_s, duration):
     except Exception:
         return None
 
-
-def _render_hook_overlay(hook_text: str, W: int, H: int) -> "Image":
-    """
-    Render a large bold hook text overlay for the first 1.5s of a clip.
-    White text with thick black stroke, centered horizontally, positioned
-    in the upper-center of the frame so it doesn't cover the speaker's face.
-    Returns a PIL RGBA Image ready to composite onto a frame.
-    """
-    from PIL import Image, ImageDraw, ImageFont
-
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Semi-transparent dark band across the top so text is always readable
-    band_h = H // 3
-    band = Image.new("RGBA", (W, band_h), (0, 0, 0, 160))
-    img.paste(band, (0, 0), band)
-
-    font_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/Library/Fonts/SF-Pro.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-    ]
-    font_path = next((p for p in font_candidates if os.path.exists(p)), None)
-
-    # Word-wrap: split hook into lines that fit within 88% of frame width
-    max_line_w = int(W * 0.88)
-    hook_upper = hook_text.upper()
-    raw_words = hook_upper.split()
-    lines: list[str] = []
-    current: list[str] = []
-
-    font_size = H // 10  # start large, shrink if needed
-    while font_size >= 36:
-        try:
-            font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
-        except Exception:
-            font = ImageFont.load_default()
-
-        lines = []
-        current = []
-        for word in raw_words:
-            test = " ".join(current + [word])
-            bb = draw.textbbox((0, 0), test, font=font)
-            if bb[2] - bb[0] > max_line_w and current:
-                lines.append(" ".join(current))
-                current = [word]
-            else:
-                current.append(word)
-        if current:
-            lines.append(" ".join(current))
-
-        # Stop shrinking once it fits in ≤3 lines within the band
-        line_h = font_size + 8
-        if len(lines) <= 4 and len(lines) * line_h <= band_h - 20:
-            break
-        font_size -= 4
-
-    line_h = font_size + 10
-    total_text_h = len(lines) * line_h
-    y = max(12, (band_h - total_text_h) // 2)
-
-    for line in lines:
-        bb = draw.textbbox((0, 0), line, font=font)
-        tw = bb[2] - bb[0]
-        x = max(10, (W - tw) // 2)
-        # Thick black stroke first, then white text on top
-        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255),
-                  stroke_width=4, stroke_fill=(0, 0, 0, 255))
-        y += line_h
-
-    return img
 
 
 def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3, hook=""):
@@ -591,8 +517,8 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         "loudnorm=I=-14:TP=-1:LRA=11"
     )
 
-    # ── Fast path: no words AND no hook overlay → skip PIL entirely ───────────
-    if not words and not hook:
+    # ── Fast path: no subtitle words → skip PIL frame extraction entirely ──────
+    if not words:
         subprocess.run([
             "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
             "-t", str(duration), "-vf", crop_scale,
@@ -612,14 +538,10 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         os.path.join(frames_dir, "frame_%06d.png"), "-y",
     ], check=True, capture_output=True)
 
-    # ── Step 2a: Pre-render hook overlay (shown for first 1.5 seconds) ──────────
-    from PIL import Image, ImageDraw, ImageFont
-    hook_overlay = _render_hook_overlay(hook, W, H) if hook and hook.strip() else None
-    hook_end_t = 1.5  # seconds
-
-    # ── Step 2b: Pre-render karaoke subtitles — one image per word ───────────
+    # ── Step 2: Pre-render karaoke subtitles — one image per word ───────────
     # Active word = yellow, rest of chunk = white, no background box, thick stroke.
     # One subtitle_data entry per word so the highlight updates word-by-word.
+    from PIL import Image, ImageDraw, ImageFont
     base_font_size = max(72, H // 11)
     font_candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -685,19 +607,12 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
             x_pos = max(10, (W - img_w) // 2)
             subtitle_data.append((word_data["start"], word_data["end"], img, x_pos, sub_y))
 
-    # ── Step 3: Paste hook overlay + subtitles onto extracted frames ──────────
+    # ── Step 3: Paste subtitles onto extracted frames ──────────
     frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
     for fi, fname in enumerate(frame_files):
         t = fi / fps
         fp = os.path.join(frames_dir, fname)
 
-        # Hook overlay: show for first 1.5 seconds
-        if hook_overlay and t < hook_end_t:
-            frame = Image.open(fp).convert("RGBA")
-            frame.paste(hook_overlay, (0, 0), hook_overlay)
-            frame.convert("RGB").save(fp)
-
-        # Subtitles: paste on top of hook overlay if both are active
         for start, end, sub_img, x, y in subtitle_data:
             if start <= t < end:
                 frame = Image.open(fp).convert("RGBA")
