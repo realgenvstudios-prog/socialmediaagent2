@@ -55,7 +55,6 @@ async function getPosts(platform: string) {
     .not("zernio_post_id", "is", null)
     .lt("clip_index", 50)
     .order("posted_at", { ascending: false })
-    .limit(200)
 
   if (platform !== "all") query = query.eq("platform", platform)
 
