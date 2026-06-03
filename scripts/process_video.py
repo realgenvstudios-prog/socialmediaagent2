@@ -88,12 +88,18 @@ def download_audio_only(url, output_dir):
 
 def download_full_video(url, output_path):
     """
-    Download the full video using yt-dlp's own downloader.
-    Format 22 = 720p progressive (single stream, no DASH merging).
-    1080p DASH is blocked by YouTube from datacenter IPs even with PO tokens.
+    Download the full video at the best available quality up to 1080p.
+    Uses DASH (video+audio merged) when running locally — 1080p DASH is only
+    blocked from datacenter/GitHub Actions IPs, not from a local machine.
+    Falls back to 720p then 360p progressive if DASH is unavailable.
     """
-    # Format 22 = 720p h264+aac progressive. Format 18 = 360p fallback.
-    format_str = "22/18"
+    # Best MP4 video up to 1080p + best M4A audio, merged → clean 1080p h264.
+    # Fallback chain: 720p DASH → 360p progressive → anything available.
+    format_str = (
+        "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=1080]+bestaudio"
+        "/22/18"
+    )
     cmd = [
         "yt-dlp",
         "-f", format_str,
@@ -104,7 +110,7 @@ def download_full_video(url, output_path):
         "--fragment-retries", "10",
         "--http-chunk-size", "10M",
         "--js-runtimes", "node",
-        "--extractor-args", "youtube:player_client=web",
+        "--extractor-args", "youtube:player_client=web,mweb,tv",
         *_ydl_auth_args(),
         "-o", output_path,
         url,
@@ -548,77 +554,78 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         os.path.join(frames_dir, "frame_%06d.png"), "-y",
     ], check=True, capture_output=True)
 
-    # ── Step 2: Pre-render karaoke subtitles — one image per word ───────────
-    # Active word = yellow, rest of chunk = white, no background box, thick stroke.
-    # One subtitle_data entry per word so the highlight updates word-by-word.
+    # ── Step 2: Pre-render subtitles — white box, dark text, sentence case ──────
+    # Style matches reference: white rounded-rect background, near-black bold text,
+    # sentence case, 4-word chunks shown all at once (no karaoke word-by-word).
     from PIL import Image, ImageDraw, ImageFont
-    base_font_size = max(72, H // 11)
+    base_font_size = max(52, H // 16)
     font_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/Library/Fonts/SF-Pro-Display-Bold.otf",
         "/Library/Fonts/SF-Pro.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
         "/System/Library/Fonts/SFNS.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     ]
     font_path = next((p for p in font_candidates if os.path.exists(p)), None)
 
     subtitle_data = []
-    tmp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    max_text_w = int(W * 0.92)
-    stroke_w   = 3
-    # Position subtitle so its bottom edge is at ~65% from top.
-    # Anything lower gets covered by platform UI (like/comment buttons, caption, gesture bar).
-    max_sub_h  = base_font_size + 2 * (stroke_w + 6)
-    sub_y      = int(H * 0.65) - max_sub_h
+    tmp_draw  = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    max_text_w = int(W * 0.82)   # leave generous side margins
+    pad_h     = 22               # horizontal padding inside box
+    pad_v     = 14               # vertical padding inside box
+    radius    = 10               # rounded corner radius
+    text_color = (15, 15, 15, 255)   # near-black
+    box_color  = (255, 255, 255, 235) # white, very slightly transparent
+
+    # Bottom of subtitle box anchored at 65% from top (safe from platform UI)
+    max_sub_h = base_font_size + 2 * pad_v
+    sub_y     = int(H * 0.65) - max_sub_h
 
     for ci in range(0, len(words), chunk_size):
         chunk = words[ci:ci + chunk_size]
         if not chunk:
             continue
 
-        chunk_texts = [wd["word"].strip().upper() for wd in chunk]
-        full_text   = " ".join(chunk_texts)
+        start = chunk[0]["start"]
+        end   = chunk[-1]["end"]
 
-        # Shrink font until the full chunk fits on one line
+        # Sentence case: first letter capitalised, rest as transcribed
+        raw   = " ".join(wd["word"].strip() for wd in chunk)
+        text  = raw[:1].upper() + raw[1:] if raw else ""
+
+        # Shrink font until text fits within max_text_w
         size = base_font_size
-        while size >= 32:
+        font = None
+        while size >= 28:
             try:
                 font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
             except Exception:
                 font = ImageFont.load_default()
-            bb = tmp_draw.textbbox((0, 0), full_text, font=font)
+            bb = tmp_draw.textbbox((0, 0), text, font=font)
             if bb[2] - bb[0] <= max_text_w:
                 break
             size -= 4
+        if font is None:
+            font = ImageFont.load_default()
 
-        # Measure each word width and the space width
-        sp_bb = tmp_draw.textbbox((0, 0), " ", font=font)
-        sp_w  = max(sp_bb[2] - sp_bb[0], size // 5)
-        word_dims = []
-        for t in chunk_texts:
-            bb = tmp_draw.textbbox((0, 0), t, font=font)
-            word_dims.append((bb[2] - bb[0], bb[3] - bb[1]))
+        bb     = tmp_draw.textbbox((0, 0), text, font=font)
+        text_w = bb[2] - bb[0]
+        text_h = bb[3] - bb[1]
 
-        total_w = sum(w for w, h in word_dims) + sp_w * max(0, len(chunk_texts) - 1)
-        line_h  = max((h for w, h in word_dims), default=size)
-        pad     = stroke_w + 6
-        img_w   = int(total_w) + pad * 2
-        img_h   = int(line_h)  + pad * 2
+        img_w = text_w + 2 * pad_h
+        img_h = text_h + 2 * pad_v
+        img   = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+        draw  = ImageDraw.Draw(img)
 
-        # One image per word — highlight rotates through the chunk
-        for wi, word_data in enumerate(chunk):
-            img  = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            x    = pad
-            for wj, (text, (ww, wh)) in enumerate(zip(chunk_texts, word_dims)):
-                color = (255, 226, 52, 255) if wj == wi else (255, 255, 255, 255)
-                draw.text((x, pad), text, font=font, fill=color,
-                          stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
-                x += ww + sp_w
+        # White rounded rectangle background
+        draw.rounded_rectangle([(0, 0), (img_w - 1, img_h - 1)], radius=radius, fill=box_color)
 
-            x_pos = max(10, (W - img_w) // 2)
-            subtitle_data.append((word_data["start"], word_data["end"], img, x_pos, sub_y))
+        # Dark text — drawn at (pad_h, pad_v - bb[1]) so descenders don't clip
+        draw.text((pad_h, pad_v - bb[1]), text, font=font, fill=text_color)
+
+        x_pos = max(10, (W - img_w) // 2)
+        subtitle_data.append((start, end, img, x_pos, sub_y))
 
     # ── Step 3: Paste subtitles onto extracted frames ──────────
     frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
