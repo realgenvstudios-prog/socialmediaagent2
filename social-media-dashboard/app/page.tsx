@@ -208,23 +208,38 @@ export default async function OverviewPage() {
 
   const platformHealth = PLATFORMS.map(p => {
     const allCount = platformCounts[p]
-    // Week clips for this platform with views
-    const weekClips = allPostsWithViews.filter((r: Post14 & { views: number }) =>
-      r.platform === p && r.posted_at && r.posted_at >= week && r.views > 0
+    // All posts this week (regardless of whether views have synced yet)
+    const weekAll = allPostsWithViews.filter((r: Post14 & { views: number }) =>
+      r.platform === p && r.posted_at && r.posted_at >= week
     )
-    const prevClips = allPostsWithViews.filter((r: Post14 & { views: number }) =>
+    // Subset that has real view data — used for avg and trend only
+    const weekWithViews = weekAll.filter((r: { views: number }) => r.views > 0)
+    const prevWithViews = allPostsWithViews.filter((r: Post14 & { views: number }) =>
       r.platform === p && r.posted_at && r.posted_at < week && r.views > 0
     )
-    const weekAvg = weekClips.length > 0 ? weekClips.reduce((s: number, r: { views: number }) => s + r.views, 0) / weekClips.length : 0
-    const prevAvg = prevClips.length > 0 ? prevClips.reduce((s: number, r: { views: number }) => s + r.views, 0) / prevClips.length : 0
 
+    const weekAvg = weekWithViews.length > 0
+      ? weekWithViews.reduce((s: number, r: { views: number }) => s + r.views, 0) / weekWithViews.length
+      : 0
+    const prevAvg = prevWithViews.length > 0
+      ? prevWithViews.reduce((s: number, r: { views: number }) => s + r.views, 0) / prevWithViews.length
+      : 0
+
+    // Only show trend arrow when both periods have enough synced data to compare
     let trend: "up" | "flat" | "down" = "flat"
-    if (weekClips.length > 0 && prevAvg > 0) {
+    if (weekWithViews.length >= 2 && prevWithViews.length >= 2) {
       if (weekAvg >= prevAvg * 1.2) trend = "up"
       else if (weekAvg <= prevAvg * 0.8) trend = "down"
     }
 
-    return { platform: p, allCount, weekClips: weekClips.length, weekAvg, trend }
+    return {
+      platform:    p,
+      allCount,
+      weekCount:   weekAll.length,       // total posts this week
+      syncedCount: weekWithViews.length, // posts with view data
+      weekAvg,
+      trend,
+    }
   })
 
   const maxCount = Math.max(...PLATFORMS.map(p => platformCounts[p]), 1)
@@ -332,11 +347,12 @@ export default async function OverviewPage() {
           Platform Health
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-          {platformHealth.map(({ platform, allCount, weekClips, weekAvg, trend }) => {
+          {platformHealth.map(({ platform, allCount, weekCount, syncedCount, weekAvg, trend }) => {
             const p = platform as Platform
             const pct = Math.round((allCount / maxCount) * 100)
             const trendIcon = trend === "up" ? "↑" : trend === "down" ? "↓" : "→"
             const trendColor = trend === "up" ? "var(--green)" : trend === "down" ? "var(--red)" : "var(--faint)"
+            const syncing = weekCount > 0 && syncedCount === 0
             return (
               <div key={p}>
                 <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "5px" }}>
@@ -349,15 +365,17 @@ export default async function OverviewPage() {
                   <span style={{ width: "28px", textAlign: "right", fontSize: "12px", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
                     {allCount}
                   </span>
-                  <span style={{ fontSize: "13px", color: trendColor, fontWeight: 600, width: "16px", textAlign: "center" }} title={
-                    weekClips > 0 ? `${weekClips} posts this week · avg ${fmt(Math.round(weekAvg))} views` : "No posts this week"
-                  }>
-                    {weekClips > 0 ? trendIcon : "—"}
+                  <span style={{ fontSize: "13px", color: trendColor, fontWeight: 600, width: "16px", textAlign: "center" }}>
+                    {weekCount > 0 ? trendIcon : "—"}
                   </span>
                 </div>
-                {weekClips > 0 && weekAvg > 0 && (
+                {weekCount > 0 && (
                   <div style={{ paddingLeft: "136px", fontSize: "11px", color: "var(--faint)" }}>
-                    {weekClips} post{weekClips !== 1 ? "s" : ""} this week · avg {fmt(Math.round(weekAvg))} views
+                    {weekCount} post{weekCount !== 1 ? "s" : ""} this week
+                    {syncing
+                      ? " · analytics syncing…"
+                      : weekAvg > 0 ? ` · avg ${fmt(Math.round(weekAvg))} views` : ""
+                    }
                   </div>
                 )}
               </div>
