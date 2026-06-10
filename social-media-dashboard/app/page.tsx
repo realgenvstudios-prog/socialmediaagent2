@@ -1,7 +1,10 @@
 import { supabase } from "@/lib/supabase"
 import { createClient } from "@supabase/supabase-js"
+import Anthropic from "@anthropic-ai/sdk"
 import PauseToggle from "@/components/PauseToggle"
 import CountdownTimer from "@/components/CountdownTimer"
+import Briefing from "@/components/Briefing"
+import AnimatedStat from "@/components/AnimatedStat"
 
 export const revalidate = 60
 
@@ -108,6 +111,68 @@ function fmt(n: number) {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
   if (n >= 1000)    return `${(n / 1000).toFixed(1)}K`
   return String(n)
+}
+
+async function generateBriefing(data: {
+  totalPosted: number
+  weekPostCount: number
+  episodes: number
+  pending: number
+  bestThisWeek: { hook: string; views: number; platform: string } | null
+  platformTrends: { platform: string; trend: string; weekAvg: number }[]
+}): Promise<string> {
+  const today = new Date().toISOString().slice(0, 10)
+
+  const { data: cached } = await admin
+    .from("settings")
+    .select("value")
+    .eq("key", `briefing_${today}`)
+    .single()
+
+  if (cached?.value?.text) return cached.value.text as string
+
+  const platformLines = data.platformTrends
+    .map(p => {
+      const arrow = p.trend === "up" ? "↑" : p.trend === "down" ? "↓" : "→"
+      return `${p.platform}: ${arrow}${p.weekAvg > 0 ? ` (avg ${Math.round(p.weekAvg)} views)` : ""}`
+    })
+    .join(", ")
+
+  const bestLine = data.bestThisWeek
+    ? `Best clip this week: "${data.bestThisWeek.hook}" — ${data.bestThisWeek.views.toLocaleString()} views on ${data.bestThisWeek.platform}`
+    : "No view data synced yet this week"
+
+  const prompt = `You are the voice of KonnectedMinds Content Studio — a social media automation platform posting African entrepreneur podcast clips to TikTok, Instagram, YouTube Shorts, and Facebook Reels.
+
+Write a 2-3 sentence daily briefing. Be direct, sharp, slightly personal, like a smart analyst who knows the business well. Reference the real numbers naturally. No bullet points, no headers, no fluff, no greeting, no em dashes.
+
+Data:
+- Total posts published all-time: ${data.totalPosted}
+- Posts this week: ${data.weekPostCount}
+- Episodes processed: ${data.episodes}
+- Clips queued to post next: ${data.pending}
+- ${bestLine}
+- Platform trends this week: ${platformLines}
+
+Write the briefing:`
+
+  try {
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    const message = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 180,
+      messages: [{ role: "user", content: prompt }],
+    })
+    const text = (message.content[0] as { type: string; text: string }).text.trim()
+
+    await admin
+      .from("settings")
+      .upsert({ key: `briefing_${today}`, value: { text, generated_at: new Date().toISOString() } }, { onConflict: "key" })
+
+    return text
+  } catch {
+    return ""
+  }
 }
 
 export default async function OverviewPage() {
@@ -244,6 +309,15 @@ export default async function OverviewPage() {
 
   const maxCount = Math.max(...PLATFORMS.map(p => platformCounts[p]), 1)
 
+  const briefingText = await generateBriefing({
+    totalPosted,
+    weekPostCount,
+    episodes,
+    pending,
+    bestThisWeek: bestThisWeek ? { hook: bestThisWeek.hook ?? "", views: bestThisWeek.views, platform: bestThisWeek.platform } : null,
+    platformTrends: platformHealth.map(p => ({ platform: p.platform, trend: p.trend, weekAvg: p.weekAvg })),
+  })
+
   return (
     <div style={{ maxWidth: "720px" }}>
       <PauseToggle initialPaused={isPaused} />
@@ -267,23 +341,15 @@ export default async function OverviewPage() {
         </p>
       </section>
 
+      {/* AI Briefing */}
+      {briefingText && <Briefing text={briefingText} />}
+
       {/* Stats + sparkline */}
       <section style={{ marginBottom: "4rem" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1px", background: "var(--border)", border: "1px solid var(--border)" }}>
-          {[
-            { label: "Posts Published", value: totalPosted },
-            { label: "This Week",       value: weekPostCount },
-            { label: "Episodes",        value: episodes },
-          ].map(s => (
-            <div key={s.label} style={{ background: "var(--bg)", padding: "2rem 1.75rem" }}>
-              <div style={{ fontSize: "2.75rem", fontWeight: 200, letterSpacing: "-0.04em", lineHeight: 1, color: "var(--text)", marginBottom: "0.6rem", fontVariantNumeric: "tabular-nums" }}>
-                {s.value}
-              </div>
-              <div style={{ fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)" }}>
-                {s.label}
-              </div>
-            </div>
-          ))}
+          <AnimatedStat value={totalPosted}   label="Posts Published" />
+          <AnimatedStat value={weekPostCount} label="This Week" />
+          <AnimatedStat value={episodes}      label="Episodes" />
         </div>
 
         {/* Sparkline row */}
@@ -302,6 +368,31 @@ export default async function OverviewPage() {
           </div>
         </div>
       </section>
+
+      {/* Low-queue notice */}
+      {pending < 12 && (
+        <div style={{
+          border: "1px solid var(--border)",
+          borderLeft: "3px solid #f59e0b",
+          padding: "0.875rem 1.25rem",
+          marginBottom: "3rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "1rem",
+          background: "var(--bg)",
+        }}>
+          <div>
+            <p style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", marginBottom: "2px" }}>
+              Queue is running low
+            </p>
+            <p style={{ fontSize: "11px", color: "var(--faint)" }}>
+              {pending} clip{pending !== 1 ? "s" : ""} left — about {Math.floor(pending / 3)} day{Math.floor(pending / 3) !== 1 ? "s" : ""} at current pace. Process a new video to keep the pipeline full.
+            </p>
+          </div>
+          <span style={{ fontSize: "18px", flexShrink: 0 }}>⚠</span>
+        </div>
+      )}
 
       {/* Best clip this week */}
       {bestThisWeek && bestThisWeek.views > 0 && (

@@ -63,23 +63,30 @@ def reset_to_pending(supabase_admin, clip_id):
     supabase_admin.table("clip_queue").update({"status": "pending"}).eq("id", clip_id).execute()
 
 
-def get_next_clip(supabase_admin, platform):
-    result = (
+def get_next_clip(supabase_admin, platform, video_id=None):
+    q = (
         supabase_admin.table("clip_queue")
         .select("*")
         .eq("platform", platform)
         .eq("status", "pending")
-        .order("created_at")
-        .limit(1)
-        .execute()
     )
+    if video_id:
+        q = q.eq("video_id", video_id)
+    result = q.order("created_at").limit(1).execute()
     return result.data[0] if result.data else None
 
 
+def build_caption(clip):
+    base = clip["caption"] or ""
+    link = f"\n\nFull episode: https://youtu.be/{clip['video_id']}"
+    return base + link
+
+
 def build_payload(clip, platform):
+    caption = build_caption(clip)
     if platform == "instagram":
         return {
-            "content": clip["caption"],
+            "content": caption,
             "mediaItems": [{"type": "video", "url": clip["public_url"]}],
             "platforms": [{
                 "platform": "instagram",
@@ -93,7 +100,7 @@ def build_payload(clip, platform):
         }
     elif platform == "tiktok":
         return {
-            "content": clip["caption"],
+            "content": caption,
             "mediaItems": [{"type": "video", "url": clip["public_url"]}],
             "platforms": [{
                 "platform": "tiktok",
@@ -111,7 +118,7 @@ def build_payload(clip, platform):
         }
     elif platform == "youtube":
         return {
-            "content": clip["caption"],
+            "content": caption,
             "mediaItems": [{"type": "video", "url": clip["public_url"]}],
             "platforms": [{
                 "platform": "youtube",
@@ -126,7 +133,7 @@ def build_payload(clip, platform):
         }
     elif platform == "facebook":
         return {
-            "content": clip["caption"],
+            "content": caption,
             "mediaItems": [{"type": "video", "url": clip["public_url"]}],
             "platforms": [{
                 "platform": "facebook",
@@ -172,13 +179,9 @@ def cleanup_storage_if_done(supabase_admin, video_id, clip_index, storage_path):
         .execute()
     )
     statuses = {row["status"] for row in result.data}
-    # Only clean up if every row is posted — not if some are still pending or failed
-    if statuses == {"posted"}:
-        try:
-            supabase_admin.storage.from_("clips").remove([storage_path])
-            print(f"  Deleted from storage: {storage_path}")
-        except Exception as e:
-            print(f"  Storage cleanup skipped: {e}")
+    # Keep files in storage — platforms (especially Instagram) download async
+    # and deleting immediately causes container errors. Files are ~30MB each.
+    pass
 
 
 def is_paused(supabase_admin):
@@ -205,6 +208,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true", help="Post immediately, bypassing schedule check")
+    parser.add_argument("--video_id", default=None, help="Only post clips from this specific video_id")
     args = parser.parse_args()
 
     supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -222,7 +226,7 @@ def main():
     posted_any = False
 
     for platform in ["instagram", "tiktok", "youtube", "facebook"]:
-        clip = get_next_clip(supabase_admin, platform)
+        clip = get_next_clip(supabase_admin, platform, video_id=args.video_id)
 
         if not clip:
             print(f"{platform}: no pending clips in queue.")
