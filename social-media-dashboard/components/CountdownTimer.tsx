@@ -33,10 +33,19 @@ export default function CountdownTimer() {
 
   if (ms === null) return null
 
+  const soon = ms > 0 && ms < 30 * 60 * 1000
+
   return (
     <span style={{ fontSize: "12px", color: "var(--faint)" }}>
       Next post in{" "}
-      <span style={{ color: "var(--muted)", fontWeight: 500 }}>{fmt(ms)}</span>
+      <span style={{
+        color: soon ? "var(--amber)" : "var(--muted)",
+        fontWeight: 500,
+        animation: soon ? "timerPulse 1.5s ease-in-out infinite" : undefined,
+        display: "inline-block",
+      }}>
+        {fmt(ms)}
+      </span>
     </span>
   )
 }

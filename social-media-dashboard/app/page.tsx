@@ -81,7 +81,7 @@ function Sparkline({ values }: { values: number[] }) {
   const area  = `M ${first} L ${pts.split(" ").map(p => `${p}`).join(" L ")} L ${last} Z`
 
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block", animation: "revealLeft 1.2s ease both", animationDelay: "0.4s" }}>
       <path d={area} fill="var(--text)" fillOpacity="0.06" />
       <polyline points={pts} fill="none" stroke="var(--text)" strokeWidth="1.5" strokeOpacity="0.5" strokeLinecap="round" strokeLinejoin="round" />
       {/* Dot on last (today) point */}
@@ -396,7 +396,7 @@ export default async function OverviewPage() {
 
       {/* Best clip this week */}
       {bestThisWeek && bestThisWeek.views > 0 && (
-        <section style={{ marginBottom: "4rem" }}>
+        <section style={{ marginBottom: "4rem", animation: "fadeUp 0.6s ease both", animationDelay: "0.15s" }}>
           <p style={{ fontSize: "11px", fontWeight: 500, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "1rem" }}>
             Best Clip This Week
           </p>
@@ -438,7 +438,7 @@ export default async function OverviewPage() {
           Platform Health
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-          {platformHealth.map(({ platform, allCount, weekCount, syncedCount, weekAvg, trend }) => {
+          {platformHealth.map(({ platform, allCount, weekCount, syncedCount, weekAvg, trend }, barIdx) => {
             const p = platform as Platform
             const pct = Math.round((allCount / maxCount) * 100)
             const trendIcon = trend === "up" ? "↑" : trend === "down" ? "↓" : "→"
@@ -451,7 +451,7 @@ export default async function OverviewPage() {
                     {PLATFORM_LABEL[p]}
                   </span>
                   <div style={{ flex: 1, height: "2px", background: "var(--border)", borderRadius: "2px" }}>
-                    <div style={{ height: "100%", width: `${pct}%`, minWidth: allCount > 0 ? "4px" : 0, background: PLATFORM_COLOR[p], borderRadius: "2px" }} />
+                    <div style={{ height: "100%", width: `${pct}%`, minWidth: allCount > 0 ? "4px" : 0, background: PLATFORM_COLOR[p], borderRadius: "2px", transformOrigin: "left center", animation: "barGrow 0.7s ease both", animationDelay: `${barIdx * 0.12}s` }} />
                   </div>
                   <span style={{ width: "28px", textAlign: "right", fontSize: "12px", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
                     {allCount}
@@ -489,9 +489,9 @@ export default async function OverviewPage() {
         <div style={{ borderTop: "1px solid var(--border)" }}>
           {recentClips.length === 0 ? (
             <p style={{ padding: "3rem 0", color: "var(--faint)", fontSize: "13px", textAlign: "center" }}>No posts yet.</p>
-          ) : recentClips.map(clip => (
+          ) : recentClips.map((clip, i) => (
             <div key={`${clip.video_id}-${clip.clip_index}`}
-              style={{ padding: "1.125rem 0", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "14px" }}>
+              style={{ padding: "1.125rem 0", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "14px", animation: "fadeUp 0.5s ease both", animationDelay: `${i * 0.07}s` }}>
               <div style={{ flexShrink: 0, width: "38px", height: "68px", overflow: "hidden", background: "var(--surface)" }}>
                 <img
                   src={`https://img.youtube.com/vi/${clip.video_id}/hqdefault.jpg`}
