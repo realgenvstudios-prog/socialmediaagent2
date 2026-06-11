@@ -14,14 +14,20 @@ function extractVideoId(url: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
-  const { url, title } = await req.json()
+  const body = await req.json()
 
-  const videoId = extractVideoId(url.trim())
-  if (!videoId) {
-    return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 })
+  // Accept either { videoId, title } directly or { url, title } for backwards compat
+  let videoId: string | null = body.videoId ?? null
+  const title: string = body.title?.trim() || videoId || ""
+
+  if (!videoId && body.url) {
+    videoId = extractVideoId(body.url.trim())
   }
 
-  // Trigger the process_manual.yml workflow via GitHub API
+  if (!videoId) {
+    return NextResponse.json({ error: "Invalid YouTube URL or video ID" }, { status: 400 })
+  }
+
   const res = await fetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process_manual.yml/dispatches`,
     {
@@ -35,14 +41,13 @@ export async function POST(req: NextRequest) {
         ref: "main",
         inputs: {
           video_id:    videoId,
-          video_url:   url.trim(),
-          video_title: title.trim() || videoId,
+          video_url:   `https://www.youtube.com/watch?v=${videoId}`,
+          video_title: title || videoId,
         },
       }),
     }
   )
 
-  // GitHub returns 204 No Content on success
   if (res.status !== 204) {
     const body = await res.text()
     console.error("GitHub dispatch failed:", res.status, body)
@@ -50,6 +55,5 @@ export async function POST(req: NextRequest) {
   }
 
   const actionsUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process_manual.yml`
-
   return NextResponse.json({ ok: true, videoId, actionsUrl })
 }

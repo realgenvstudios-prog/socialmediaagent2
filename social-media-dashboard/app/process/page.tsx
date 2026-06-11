@@ -1,38 +1,84 @@
 "use client"
-import { useState } from "react"
+import { useState, useEffect } from "react"
+
+type VideoItem = {
+  videoId: string
+  title: string
+  thumbnail: string
+  publishedAt: string
+  duration: string
+  processed: { clip_count: number; processed_at: string } | null
+}
+
+function timeAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const d = Math.floor(diff / 86400000)
+  if (d === 0) return "today"
+  if (d === 1) return "yesterday"
+  if (d < 7)  return `${d}d ago`
+  if (d < 30) return `${Math.floor(d / 7)}w ago`
+  return `${Math.floor(d / 30)}mo ago`
+}
+
+function SkeletonCard() {
+  return (
+    <div style={{ border: "1px solid var(--border)" }}>
+      <div style={{ paddingTop: "56.25%", background: "var(--surface)", position: "relative" }} />
+      <div style={{ padding: "14px 16px 16px" }}>
+        <div style={{ height: "12px", background: "var(--surface)", marginBottom: "8px", width: "90%" }} />
+        <div style={{ height: "12px", background: "var(--surface)", width: "60%" }} />
+      </div>
+    </div>
+  )
+}
 
 export default function ProcessPage() {
-  const [url, setUrl]           = useState("")
-  const [title, setTitle]       = useState("")
-  const [status, setStatus]     = useState<"idle" | "loading" | "success" | "error">("idle")
-  const [actionsUrl, setActionsUrl] = useState("")
-  const [errorMsg, setErrorMsg] = useState("")
+  const [videos, setVideos]       = useState<VideoItem[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [selected, setSelected]   = useState<VideoItem | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState<Set<string>>(new Set())
+  const [error, setError]         = useState("")
 
-  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault()
-    setStatus("loading")
-    setErrorMsg("")
+  useEffect(() => {
+    fetch("/api/channel-videos")
+      .then(r => r.json())
+      .then(d => { setVideos(d.videos ?? []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  async function handleProcess() {
+    if (!selected || submitting) return
+    setSubmitting(true)
+    setError("")
 
     const res = await fetch("/api/process", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: url.trim(), title: title.trim() }),
+      body: JSON.stringify({ videoId: selected.videoId, title: selected.title }),
     })
 
-    const data = await res.json()
     if (res.ok) {
-      setStatus("success")
-      setActionsUrl(data.actionsUrl)
+      setSubmitted(prev => new Set(prev).add(selected.videoId))
+      setSelected(null)
     } else {
-      setStatus("error")
-      setErrorMsg(data.error ?? "Something went wrong")
+      const d = await res.json()
+      setError(d.error ?? "Something went wrong")
     }
+    setSubmitting(false)
   }
 
-  function reset() { setStatus("idle"); setUrl(""); setTitle(""); setErrorMsg("") }
+  const isSubmitted  = (id: string) => submitted.has(id)
+  const isProcessed  = (v: VideoItem) => !!v.processed
+  const isSelected   = (v: VideoItem) => selected?.videoId === v.videoId
+
+  function selectCard(v: VideoItem) {
+    setError("")
+    setSelected(prev => prev?.videoId === v.videoId ? null : v)
+  }
 
   return (
-    <div style={{ maxWidth: "560px" }}>
+    <div style={{ maxWidth: "960px" }}>
 
       {/* Header */}
       <div style={{ marginBottom: "3rem" }}>
@@ -40,121 +86,184 @@ export default function ProcessPage() {
           Process
         </h1>
         <p style={{ fontSize: "13px", color: "var(--muted)" }}>
-          Submit a YouTube URL — Claude picks the clips, burns subtitles, and queues everything automatically.
+          Pick a video from the channel — the agent picks the clips, burns subtitles, and queues everything automatically.
         </p>
       </div>
 
-      <div style={{ border: "1px solid var(--border)" }}>
-        {status !== "success" ? (
-          <form onSubmit={handleSubmit} style={{ padding: "2rem" }}>
-
-            {/* URL field */}
-            <div style={{ marginBottom: "1.25rem" }}>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "8px" }}>
-                YouTube URL
-              </label>
-              <input
-                type="url"
-                placeholder="https://www.youtube.com/watch?v=..."
-                value={url}
-                onChange={e => setUrl(e.target.value)}
-                required
-                style={{
-                  width: "100%", padding: "10px 14px", fontSize: "13px",
-                  border: "1px solid var(--border)", background: "var(--bg)",
-                  color: "var(--text)", outline: "none", boxSizing: "border-box",
-                  transition: "border-color 0.15s",
-                }}
-                onFocus={e => (e.target.style.borderColor = "#999")}
-                onBlur={e => (e.target.style.borderColor = "var(--border)")}
-              />
-            </div>
-
-            {/* Title field */}
-            <div style={{ marginBottom: "1.5rem" }}>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "8px" }}>
-                Video Title{" "}
-                <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: "var(--faint)" }}>
-                  — optional, helps Claude pick better clips
-                </span>
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. She Built Two Businesses While Everyone Else Was Just Posting"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                style={{
-                  width: "100%", padding: "10px 14px", fontSize: "13px",
-                  border: "1px solid var(--border)", background: "var(--bg)",
-                  color: "var(--text)", outline: "none", boxSizing: "border-box",
-                  transition: "border-color 0.15s",
-                }}
-                onFocus={e => (e.target.style.borderColor = "#999")}
-                onBlur={e => (e.target.style.borderColor = "var(--border)")}
-              />
-            </div>
-
-            {/* Error */}
-            {status === "error" && (
-              <p style={{ fontSize: "12px", color: "var(--red)", marginBottom: "1rem" }}>
-                {errorMsg || "Invalid YouTube URL — make sure it includes a video ID."}
-              </p>
-            )}
-
-            {/* Submit */}
-            <button
-              type="submit"
-              disabled={status === "loading"}
-              style={{
-                width: "100%", padding: "10px 14px", fontSize: "13px",
-                fontWeight: 600, letterSpacing: "0.02em", color: "#fff",
-                background: status === "loading" ? "var(--faint)" : "var(--text)",
-                border: "none", cursor: status === "loading" ? "not-allowed" : "pointer",
-                transition: "background 0.15s",
-              }}
-            >
-              {status === "loading" ? "Starting…" : "Process video"}
-            </button>
-          </form>
-
-        ) : (
-          <div style={{ padding: "2rem" }}>
-
-            {/* Success */}
-            <p style={{ fontSize: "12px", color: "var(--green)", fontWeight: 500, marginBottom: "1rem" }}>
-              ● Processing started
-            </p>
-            <p style={{ fontSize: "13px", color: "var(--text)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
-              GitHub is now downloading the video, transcribing it, picking the best clips with Claude, burning subtitles and uploading everything.
-              Takes <strong>30–60 minutes</strong>. Clips will appear in the queue automatically when done.
-            </p>
-
-            {/* Progress link */}
-            <a
-              href={actionsUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "inline-block", fontSize: "12px", fontWeight: 600,
-                padding: "8px 18px", border: "1px solid var(--border)",
-                color: "var(--text)", textDecoration: "none", marginBottom: "1.75rem",
-                letterSpacing: "0.02em", transition: "border-color 0.15s",
-              }}
-            >
-              Watch progress on GitHub Actions ↗
-            </a>
-
-            <div>
-              <button
-                onClick={reset}
-                style={{ fontSize: "12px", color: "var(--muted)", background: "none", border: "none", cursor: "pointer", padding: 0, display: "block" }}
-              >
-                ← Process another video
-              </button>
-            </div>
-          </div>
+      {/* Section label */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
+        <span style={{ fontSize: "11px", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)" }}>
+          Channel Videos {!loading && videos.length > 0 && `· ${videos.length} videos`}
+        </span>
+        {!loading && (
+          <button
+            onClick={() => { setLoading(true); fetch("/api/channel-videos").then(r => r.json()).then(d => { setVideos(d.videos ?? []); setLoading(false) }) }}
+            style={{ fontSize: "11px", color: "var(--muted)", background: "none", border: "none", padding: 0, cursor: "pointer", letterSpacing: "0.05em" }}
+          >
+            Refresh
+          </button>
         )}
       </div>
+
+      {/* Video grid */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(3, 1fr)",
+        gap: "1px",
+        background: "var(--border)",
+        border: "1px solid var(--border)",
+        marginBottom: selected ? "0" : "4rem",
+      }}>
+        {loading
+          ? Array.from({ length: 9 }).map((_, i) => (
+              <div key={i} style={{ background: "var(--bg)" }}>
+                <SkeletonCard />
+              </div>
+            ))
+          : videos.map(v => {
+              const done      = isProcessed(v)
+              const queued    = isSubmitted(v.videoId)
+              const sel       = isSelected(v)
+
+              return (
+                <div
+                  key={v.videoId}
+                  onClick={() => !queued && selectCard(v)}
+                  style={{
+                    background:  "var(--bg)",
+                    cursor:      queued ? "default" : "pointer",
+                    outline:     sel ? "2px solid var(--text)" : "none",
+                    outlineOffset: "-1px",
+                    position:    "relative",
+                    transition:  "opacity 0.15s",
+                    opacity:     queued ? 0.5 : 1,
+                  }}
+                >
+                  {/* Thumbnail */}
+                  <div style={{ position: "relative", paddingTop: "56.25%", background: "var(--surface)", overflow: "hidden" }}>
+                    {v.thumbnail && (
+                      <img
+                        src={v.thumbnail}
+                        alt=""
+                        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                    )}
+
+                    {/* Duration — bottom right */}
+                    {v.duration && (
+                      <span style={{
+                        position: "absolute", bottom: "7px", right: "7px",
+                        fontSize: "11px", fontWeight: 600,
+                        padding: "2px 6px", background: "rgba(0,0,0,0.75)",
+                        color: "#fff", letterSpacing: "0.02em",
+                      }}>
+                        {v.duration}
+                      </span>
+                    )}
+
+                    {/* Status badge — top left */}
+                    {done && !queued && (
+                      <span style={{
+                        position: "absolute", top: "8px", left: "8px",
+                        fontSize: "10px", fontWeight: 600, letterSpacing: "0.06em",
+                        padding: "3px 8px", background: "rgba(0,0,0,0.72)",
+                        color: "#4ade80", textTransform: "uppercase",
+                      }}>
+                        ● {v.processed!.clip_count} clips
+                      </span>
+                    )}
+                    {queued && (
+                      <span style={{
+                        position: "absolute", top: "8px", left: "8px",
+                        fontSize: "10px", fontWeight: 600, letterSpacing: "0.06em",
+                        padding: "3px 8px", background: "rgba(0,0,0,0.72)",
+                        color: "#a3a3a3", textTransform: "uppercase",
+                      }}>
+                        Queued
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div style={{ padding: "12px 14px 14px" }}>
+                    <p style={{
+                      fontSize: "12px", fontWeight: 500, color: "var(--text)",
+                      lineHeight: 1.45, marginBottom: "5px",
+                      display: "-webkit-box", WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical", overflow: "hidden",
+                    }}>
+                      {v.title}
+                    </p>
+                    <p style={{ fontSize: "11px", color: "var(--faint)" }}>
+                      {timeAgo(v.publishedAt)}
+                      {done && !queued && (
+                        <span style={{ color: "var(--faint)", marginLeft: "6px" }}>
+                          · processed {timeAgo(v.processed!.processed_at)}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              )
+            })
+        }
+      </div>
+
+      {/* Confirmation bar — sticky bottom panel when a card is selected */}
+      {selected && (
+        <div style={{
+          position: "sticky",
+          bottom: 0,
+          background: "rgba(255,255,255,0.96)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          borderTop: "1px solid var(--border)",
+          padding: "1rem 1.5rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "1rem",
+          marginBottom: "4rem",
+          zIndex: 40,
+        }}>
+          <div style={{ minWidth: 0 }}>
+            {selected.processed && (
+              <p style={{ fontSize: "11px", color: "var(--amber)", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: "2px" }}>
+                Already processed · {selected.processed.clip_count} clips generated
+              </p>
+            )}
+            <p style={{ fontSize: "13px", color: "var(--text)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {selected.title}
+            </p>
+            {error && (
+              <p style={{ fontSize: "11px", color: "var(--red)", marginTop: "4px" }}>{error}</p>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 }}>
+            <button
+              onClick={() => { setSelected(null); setError("") }}
+              style={{ fontSize: "12px", color: "var(--muted)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleProcess}
+              disabled={submitting}
+              style={{
+                fontSize: "12px", fontWeight: 600, letterSpacing: "0.03em",
+                padding: "9px 20px",
+                background: submitting ? "var(--faint)" : "var(--text)",
+                color: "#fff", border: "none",
+                cursor: submitting ? "not-allowed" : "pointer",
+                transition: "background 0.15s",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {submitting ? "Starting…" : selected.processed ? "Process again →" : "Process video →"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
