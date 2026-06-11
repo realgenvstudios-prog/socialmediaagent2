@@ -21,7 +21,7 @@ jobs:
         run: pip install requests python-dotenv supabase
 
       - name: Post next clips
-        run: python scripts/post_clips.py --force
+        run: python scripts/post_clips.py ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
