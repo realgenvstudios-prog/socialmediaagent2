@@ -76,14 +76,18 @@ def get_next_clip(supabase_admin, platform, video_id=None):
     return result.data[0] if result.data else None
 
 
-def build_caption(clip):
+def build_caption(clip, platform):
     base = clip["caption"] or ""
-    link = f"\n\nFull episode: https://youtu.be/{clip['video_id']}"
+    vid = clip["video_id"]
+    if platform in ("instagram", "tiktok"):
+        link = f"\n\nWatch full episode → youtu.be/{vid}"
+    else:
+        link = f"\n\nFull episode: https://youtu.be/{vid}"
     return base + link
 
 
 def build_payload(clip, platform):
-    caption = build_caption(clip)
+    caption = build_caption(clip, platform)
     if platform == "instagram":
         return {
             "content": caption,
