@@ -7,7 +7,7 @@ function expectedToken() {
     .digest("hex")
 }
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
 
   if (pathname.startsWith("/login") || pathname.startsWith("/api/auth")) {
