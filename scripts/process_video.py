@@ -57,13 +57,9 @@ def to_hhmmss(seconds):
 # ── Download ───────────────────────────────────────────────────────────────────
 
 def _ydl_auth_args():
-    """Return auth args for yt-dlp. OAuth2 token takes priority over cookies."""
     proxy = os.environ.get("YTDLP_PROXY")
     if proxy:
         return ["--proxy", proxy]
-    oauth_file = os.environ.get("YOUTUBE_OAUTH2_TOKEN_FILE")
-    if oauth_file and os.path.exists(oauth_file):
-        return ["--username", "oauth2", "--password", ""]
     cookies = os.environ.get("YOUTUBE_COOKIES_FILE")
     if cookies and os.path.exists(cookies):
         return ["--cookies", cookies]
@@ -78,8 +74,7 @@ def download_audio_only(url, output_dir):
             "yt-dlp",
             "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "--no-playlist",
-            "--js-runtimes", "node",
-            "--extractor-args", "youtube:player_client=web",
+            "--extractor-args", "youtube:player_client=ios,web",
             *_ydl_auth_args(),
             "-o", output_path,
             url,
@@ -115,8 +110,7 @@ def download_full_video(url, output_path):
         "--retries", "10",
         "--fragment-retries", "10",
         "--http-chunk-size", "10M",
-        "--js-runtimes", "node",
-        "--extractor-args", "youtube:player_client=web,mweb,tv",
+        "--extractor-args", "youtube:player_client=ios,web,mweb,tv",
         *_ydl_auth_args(),
         "-o", output_path,
         url,
