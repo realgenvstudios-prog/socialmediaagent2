@@ -96,7 +96,7 @@ async function fetchZernioAnalyticsMap(): Promise<Map<string, ZernioPost>> {
       try {
         const res = await fetch(`https://zernio.com/api/v1/analytics?page=${page}`, {
           headers: { Authorization: `Bearer ${key}` },
-          next: { revalidate: 60 },
+          cache: "no-store",
         })
         if (!res.ok) break
         const data = await res.json()
