@@ -57,12 +57,15 @@ def to_hhmmss(seconds):
 # ── Download ───────────────────────────────────────────────────────────────────
 
 def _ydl_auth_args():
-    """Return proxy or cookies args for yt-dlp authentication."""
+    """Return auth args for yt-dlp. OAuth2 token takes priority over cookies."""
     proxy = os.environ.get("YTDLP_PROXY")
     if proxy:
         return ["--proxy", proxy]
+    oauth_file = os.environ.get("YOUTUBE_OAUTH2_TOKEN_FILE")
+    if oauth_file and os.path.exists(oauth_file):
+        return ["--username", "oauth2", "--password", ""]
     cookies = os.environ.get("YOUTUBE_COOKIES_FILE")
-    if cookies:
+    if cookies and os.path.exists(cookies):
         return ["--cookies", cookies]
     return []
 
