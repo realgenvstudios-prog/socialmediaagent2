@@ -5,6 +5,7 @@ import PauseToggle from "@/components/PauseToggle"
 import CountdownTimer from "@/components/CountdownTimer"
 import Briefing from "@/components/Briefing"
 import AnimatedStat from "@/components/AnimatedStat"
+import IntelligencePanel from "@/components/IntelligencePanel"
 
 export const revalidate = 60
 
@@ -184,6 +185,7 @@ export default async function OverviewPage() {
     { totalPosted, pending, episodes, platformCounts, recentClips, last14Posts },
     zernioMap,
     pausedRes,
+    intelligenceRes,
   ] = await Promise.all([
     (async () => {
       const [postedRes, pendingRes, episodesRes, platformRes, recentRes, last14Res] = await Promise.all([
@@ -238,6 +240,7 @@ export default async function OverviewPage() {
     })(),
     fetchZernioMap(),
     admin.from("settings").select("value").eq("key", "paused").single(),
+    admin.from("channel_intelligence").select("summary, stats, updated_at").eq("id", "singleton").single(),
   ])
 
   const isPaused = Boolean(pausedRes.data?.value?.paused)
@@ -308,6 +311,15 @@ export default async function OverviewPage() {
   })
 
   const maxCount = Math.max(...PLATFORMS.map(p => platformCounts[p]), 1)
+
+  const intelligenceData = intelligenceRes.data ? {
+    summary:       intelligenceRes.data.summary ?? "",
+    updatedAt:     intelligenceRes.data.updated_at ?? "",
+    clipsAnalysed: (intelligenceRes.data.stats as Record<string, number> | null)?.clips_analysed ?? 0,
+    totalViews:    (intelligenceRes.data.stats as Record<string, number> | null)?.total_views    ?? 0,
+    bestHook:      (intelligenceRes.data.stats as Record<string, string>  | null)?.best_hook     ?? "",
+    bestViews:     (intelligenceRes.data.stats as Record<string, number> | null)?.best_views     ?? 0,
+  } : null
 
   const briefingText = await generateBriefing({
     totalPosted,
@@ -474,6 +486,9 @@ export default async function OverviewPage() {
           })}
         </div>
       </section>
+
+      {/* AI Intelligence */}
+      <IntelligencePanel data={intelligenceData} />
 
       {/* Recent posts */}
       <section>
