@@ -23,6 +23,7 @@ import time
 import argparse
 import subprocess
 import tempfile
+import shutil
 from pathlib import Path
 
 import requests
@@ -40,6 +41,8 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 
 WHISPER_MODEL = "medium"
+
+LOGO_PATH = str(Path(__file__).parent.parent / "logo.png")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -93,11 +96,11 @@ def download_full_video(url, output_path):
     blocked from datacenter/GitHub Actions IPs, not from a local machine.
     Falls back to 720p then 360p progressive if DASH is unavailable.
     """
-    # Best MP4 video up to 1080p + best M4A audio, merged → clean 1080p h264.
-    # Fallback chain: 720p DASH → 360p progressive → anything available.
+    # 720p source is sufficient — ffmpeg scales up to 1080x1920 output.
+    # Keeps download ~200MB vs 500MB+ for 1080p on long podcasts.
     format_str = (
-        "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo[height<=1080]+bestaudio"
+        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo[height<=720]+bestaudio"
         "/22/18"
     )
     cmd = [
@@ -197,27 +200,42 @@ def _classify_topic(hook: str) -> str:
     return "personal"
 
 
-def _log_clip_selections(supabase, video_id: str, clips: list, durations: dict | None = None) -> None:
-    """Log Claude's clip selections with hook type and topic for future outcome tracking."""
+def _extract_clip_transcript(segments: list, start_s: float, end_s: float) -> str:
+    """Return the spoken text for transcript segments overlapping [start_s, end_s]."""
+    parts = []
+    for seg in segments:
+        if seg.get("end", 0) > start_s and seg.get("start", 0) < end_s:
+            parts.append(seg["text"].strip())
+    return " ".join(parts)[:1200]
+
+
+def _log_clip_selections(supabase, video_id: str, clips: list, segments: list | None = None) -> None:
+    """Log clip selections with hook type, topic, and transcript text for content learning."""
     try:
         rows = []
         for i, clip in enumerate(clips):
-            hook = clip.get("hook", "")
-            duration = None
-            if durations:
-                duration = durations.get(i)
-            elif clip.get("end_seconds") and clip.get("start_seconds"):
-                duration = round(clip["end_seconds"] - clip["start_seconds"])
+            hook     = clip.get("hook", "")
+            start_s  = clip.get("start_seconds") or 0
+            end_s    = clip.get("end_seconds") or 0
+            duration = round(end_s - start_s) if end_s > start_s else None
+            transcript = _extract_clip_transcript(segments, start_s, end_s) if segments else None
             rows.append({
-                "video_id":       video_id,
-                "clip_index":     i,
-                "hook":           hook[:200],
+                "video_id":         video_id,
+                "clip_index":       i,
+                "hook":             hook[:200],
                 "duration_seconds": duration,
-                "hook_type":      _classify_hook_type(hook),
-                "topic_category": _classify_topic(hook),
+                "hook_type":        _classify_hook_type(hook),
+                "topic_category":   _classify_topic(hook),
+                "clip_transcript":  transcript,
             })
-        supabase.table("clip_selection_log").upsert(rows, on_conflict="video_id,clip_index").execute()
-        print(f"  [Memory] Logged {len(rows)} clip selections to learning DB.")
+        try:
+            supabase.table("clip_selection_log").upsert(rows, on_conflict="video_id,clip_index").execute()
+            print(f"  [Memory] Logged {len(rows)} clip selections (with transcripts).")
+        except Exception:
+            # clip_transcript column may not exist yet — retry without it
+            rows_basic = [{k: v for k, v in r.items() if k != "clip_transcript"} for r in rows]
+            supabase.table("clip_selection_log").upsert(rows_basic, on_conflict="video_id,clip_index").execute()
+            print(f"  [Memory] Logged {len(rows)} clips (add clip_transcript TEXT column to enable content analysis).")
     except Exception as e:
         print(f"  [Memory] Could not log selections: {e}")
 
@@ -248,8 +266,8 @@ def select_clips(anthropic_client, segments, video_title, supabase=None):
         lines.append(f"[{sm:02d}:{ss:02d}-{em:02d}:{es:02d}] {seg['text']}")
 
     transcript_text = "\n".join(lines)
-    if len(transcript_text) > 80000:
-        transcript_text = transcript_text[:80000] + "\n...[truncated]"
+    if len(transcript_text) > 40000:
+        transcript_text = transcript_text[:40000] + "\n...[truncated]"
 
     intelligence = _load_channel_intelligence(supabase) if supabase else ""
     intelligence_block = ""
@@ -261,12 +279,12 @@ This is real data from clips already posted on this channel. Use it to inform ev
 
 {intelligence}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
         print("  [Intelligence] Loaded channel performance brief into prompt.")
     else:
-        print("  [Intelligence] No brief available yet — using base rules only.")
+        print("  [Intelligence] No brief available yet -- using base rules only.")
 
     prompt = f"""You are an expert viral short-form content strategist who deeply understands what makes people stop scrolling and watch a video clip all the way through to completion.
 
@@ -301,20 +319,43 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
   • A mid-thought that requires the previous sentence to make sense
   • A compliment or pleasantry: "That's a great question", "Absolutely, I agree"
 
-4. CONTENT COHESION — Each clip must contain ONE complete self-contained idea, story, or revelation. A viewer who has never heard of this podcast must instantly understand the context. Strongly prioritise moments that are:
+4. THE STRONG ENDING TEST — A clip is only as good as its ending. Before finalising any clip, apply this test to its closing moment: would a viewer who just finished watching feel satisfied, provoked, or compelled to rewatch?
+
+  A strong ending is one of these:
+  • A punchline or twist as a final statement — the idea lands and then stops
+  • A direct challenge to the audience ("That is the truth and you know it")
+  • A specific result revealed at the end ("...and we made 40,000 cedis that month")
+  • A counter-intuitive conclusion that closes the thought completely
+  • A quiet moment of silence after a hard truth — the clip ends right before the next breath
+
+  A weak ending sounds like:
+  • Trailing off: "...you know, it just kind of... yeah"
+  • Bleeding into the next topic: "Anyway, what I was going to say about that is..."
+  • Over-explaining: "...what I mean is basically what I was trying to say is..."
+  • An incomplete sentence or half-finished thought
+
+  Your end_seconds MUST land on the last word of the strong closing beat. Cut immediately after. Do not let the clip run into the next sentence or the speaker's next breath.
+
+5. CONTENT COHESION — Each clip must contain ONE complete self-contained idea with a 3-part arc:
+  • HOOK (0-5s): The opening line creates tension, curiosity, or surprise in the viewer's mind
+  • DEVELOPMENT (middle): The speaker builds the idea — adds a specific detail, tells the story, or explains the stakes
+  • PAYOFF (final 5-10s): The clip ends on a clear answer, revelation, punchline, or strong closing statement
+
+  A clip missing the Payoff will not be rewatched or shared no matter how strong the hook is. Reject any clip where the idea is not fully resolved within the selected time range.
+
+  Also prioritise moments that are:
   • A specific number, amount, or statistic that reveals something surprising
   • A personal failure, mistake, or lesson the speaker learned the hard way
   • A take that the Konnected Minds audience (Ghana/Africa, entrepreneurship, business, faith, ambition) will passionately agree or disagree with
-  • A story with a clear arc that resolves within the clip
   • A revelation that reframes how the audience thinks about something they already believe
 
-5. ALGORITHM SIGNALS — Pick moments that will drive measurable actions:
+6. ALGORITHM SIGNALS — Pick moments that will drive measurable actions:
   • Comments: the audience needs to argue about it, share their own story, or tag someone
   • Shares: the clip must feel like "I need to send this to someone right now"
   • Saves: practical insight or a hard truth people want to return to
   • Replays: a punchline, a stat, or a twist delivered so well they want to hear it again
 
-6. TIMESTAMP CONVERSION — Each transcript line shows [MM:SS-MM:SS] format. Convert the start time of your chosen clip to raw integer seconds for start_seconds, and the end time to raw integer seconds for end_seconds. Example: a clip starting at 02:05 and ending at 03:07 becomes start_seconds: 125, end_seconds: 187.
+7. TIMESTAMP CONVERSION — Each transcript line shows [MM:SS-MM:SS] format. Convert the start time of your chosen clip to raw integer seconds for start_seconds, and the end time to raw integer seconds for end_seconds. Example: a clip starting at 02:05 and ending at 03:07 becomes start_seconds: 125, end_seconds: 187.
 
 ━━━ CAPTION RULES ━━━
 
@@ -348,21 +389,25 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
   }}
 ]"""
 
-    for attempt in range(3):
+    raw = ""
+    for attempt in range(4):
         try:
-            msg = anthropic_client.messages.create(
+            # Stream the response -- keeps connection alive on large prompts
+            with anthropic_client.messages.stream(
                 model="claude-sonnet-4-6",
                 max_tokens=6000,
                 messages=[{"role": "user", "content": prompt}],
-            )
+            ) as stream:
+                raw = stream.get_final_text()
             break
         except Exception as e:
-            if attempt == 2:
+            if attempt == 3:
                 raise
-            print(f"  Claude API attempt {attempt + 1} failed ({e}), retrying...")
-            import time; time.sleep(10 * (attempt + 1))
+            wait = 15 * (attempt + 1)
+            print(f"  Claude API attempt {attempt + 1} failed ({e}), retrying in {wait}s...")
+            import time; time.sleep(wait)
 
-    raw = msg.content[0].text.strip()
+    raw = raw.strip()
     # Robust extraction: find the outermost JSON array regardless of any surrounding text
     start_idx = raw.find("[")
     end_idx = raw.rfind("]")
@@ -383,117 +428,222 @@ CRITICAL: Output ONLY the raw JSON array. Do not include any introductory senten
 
 # ── Video processing ───────────────────────────────────────────────────────────
 
-def _smart_crop_x(video_path, start_s, duration):
+def _compute_speaker_crop_path(video_path: str, start_s: float, duration: float, fps: float) -> list:
     """
-    Detect the speaker's face using MediaPipe (deep learning, much more accurate
-    than Haar cascades for real-world podcast footage). Falls back to Haar cascades
-    if MediaPipe isn't available, then to pixel-variance side detection as a last resort.
-    Returns (x_offset, crop_w, frame_h) or None to fall back to center crop.
-    """
-    try:
-        import cv2
-        import numpy as np
+    Compute a per-frame (x, y, crop_w, crop_h) path tracking the dominant speaker.
 
+    Design:
+    - Tight 9:16 crop: full source height, horizontal tracking only.
+      For a 720p (1280x720) source this is 405x720 -- shows face + upper body,
+      fills 1080x1920 with no wasted bars.
+    - MediaPipe face detection every DETECT_EVERY output frames (~10fps at 30fps).
+    - Linear interpolation between detections for sub-detection-interval smoothness.
+    - EMA smoothing (alpha=0.08) makes the crop move like a deliberate camera
+      operator, not an AI twitching every second.
+    - Hard velocity cap (1.5% of frame width per frame) prevents jarring pans.
+    - Haar cascade fallback if MediaPipe is unavailable.
+    - Pixel-variance side fallback if zero faces are ever detected (B-roll, graphics).
+    - All errors fall back silently to a static center crop -- never raises.
+    """
+    import cv2
+    import numpy as np
+
+    n_frames = max(1, int(round(duration * fps)))
+
+    try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return None
+            raise RuntimeError("Cannot open video")
 
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or fps
         frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        crop_w  = frame_h * 9 // 16
 
-        face_centers: list[int] = []
-        frames_sampled: list = []
-        n = 20  # more samples → better coverage when camera cuts between speakers
+        # 9:16 portrait crop -- full source height, partial width
+        crop_h = frame_h
+        crop_w = int(round(frame_h * 9 / 16))
+        if crop_w > frame_w:          # ultra-wide or portrait source
+            crop_w = frame_w
+            crop_h = int(round(frame_w * 16 / 9))
+        max_x = frame_w - crop_w
+        y     = (frame_h - crop_h) // 2   # 0 for standard 16:9 sources
 
-        # ── Attempt 1: MediaPipe FaceDetection (deep learning, handles angles/lighting) ──
+        # MediaPipe setup
         mp_detector = None
         try:
             import mediapipe as mp
             mp_detector = mp.solutions.face_detection.FaceDetection(
-                model_selection=1,       # optimised for faces up to 5m — good for wide podcast shots
-                min_detection_confidence=0.3,  # lower threshold catches faces in wider shots
+                model_selection=1,             # full-range model, handles far faces
+                min_detection_confidence=0.25,
             )
         except Exception:
             pass
 
-        for i in range(1, n + 1):
-            cap.set(cv2.CAP_PROP_POS_MSEC, (start_s + duration * i / (n + 1)) * 1000)
+        # Haar cascade fallback setup (only when MediaPipe unavailable)
+        haar_cascades = []
+        if mp_detector is None:
+            for xml in ["haarcascade_frontalface_default.xml",
+                        "haarcascade_frontalface_alt2.xml"]:
+                try:
+                    c = cv2.CascadeClassifier(cv2.data.haarcascades + xml)
+                    if not c.empty():
+                        haar_cascades.append(c)
+                except Exception:
+                    pass
+
+        # Detect every DETECT_EVERY output frames (~10fps at 30fps source)
+        DETECT_EVERY = 3
+        start_frame  = int(round(start_s * src_fps))
+        detections   = {}   # output_frame_idx -> cx (face center x, source pixels)
+        frames_for_variance = []
+
+        for out_fi in range(0, n_frames, DETECT_EVERY):
+            # Map output frame index to source frame (accounts for fps mismatch)
+            src_fi = int(round(out_fi * src_fps / fps))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame + src_fi)
             ret, frame = cap.read()
             if not ret:
-                continue
-            frames_sampled.append(frame)
+                break
+
+            frames_for_variance.append(frame)
+            cx_best = None
 
             if mp_detector is not None:
-                rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = mp_detector.process(rgb)
-                if results.detections:
-                    best = max(results.detections, key=lambda d: d.score[0])
-                    bb   = best.location_data.relative_bounding_box
-                    cx   = int((bb.xmin + bb.width / 2) * frame_w)
-                    face_centers.append(cx)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                res = mp_detector.process(rgb)
+                if res.detections:
+                    # Dominant face: highest confidence x relative area product
+                    best_score = -1.0
+                    for det in res.detections:
+                        bb    = det.location_data.relative_bounding_box
+                        score = det.score[0] * bb.width * bb.height
+                        if score > best_score:
+                            best_score = score
+                            cx_best    = int((bb.xmin + bb.width * 0.5) * frame_w)
             else:
-                # ── Attempt 2: Haar cascades fallback ──
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                min_sz = max(20, frame_h // 10)
-                for xml in ["haarcascade_frontalface_default.xml",
-                            "haarcascade_frontalface_alt2.xml",
-                            "haarcascade_profileface.xml"]:
-                    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + xml)
-                    faces = cascade.detectMultiScale(gray, 1.1, 2, minSize=(min_sz, min_sz))
-                    if len(faces) > 0:
-                        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                        face_centers.append(x + w // 2)
+                gray   = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                min_sz = max(30, frame_w // 15)
+                for cascade in haar_cascades:
+                    faces = cascade.detectMultiScale(gray, 1.1, 3,
+                                                     minSize=(min_sz, min_sz))
+                    if len(faces):
+                        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+                        cx_best = fx + fw // 2
                         break
 
-        if mp_detector is not None:
-            mp_detector.close()
+            if cx_best is not None:
+                detections[out_fi] = cx_best
+
+        if mp_detector:
+            try:
+                mp_detector.close()
+            except Exception:
+                pass
         cap.release()
 
-        if face_centers:
-            # When two speakers are far apart, pick the dominant cluster (most screen time)
-            # rather than the median, which can land between them and show neither face.
-            spread = max(face_centers) - min(face_centers)
-            if spread > crop_w * 0.5 and len(face_centers) >= 4:
-                mid = (max(face_centers) + min(face_centers)) / 2
-                left_cluster  = [c for c in face_centers if c <= mid]
-                right_cluster = [c for c in face_centers if c >  mid]
-                dominant = left_cluster if len(left_cluster) >= len(right_cluster) else right_cluster
-                avg_cx = int(sum(dominant) / len(dominant))
-            else:
-                avg_cx = sorted(face_centers)[len(face_centers) // 2]
-            x_off = max(0, min(avg_cx - crop_w // 2, frame_w - crop_w))
-            return x_off, crop_w, frame_h
+        n_windows = max(1, n_frames // DETECT_EVERY)
+        print(f"  [FaceTrack] {len(detections)}/{n_windows} windows have faces  "
+              f"(crop {crop_w}x{crop_h} from {frame_w}x{frame_h})")
 
-        # ── Attempt 3: variance-based side detection ──
-        # In a podcast the mic/table is dead-centre; the speakers are left or right.
-        if frames_sampled:
+        # ── Cluster to dominant speaker ───────────────────────────────────────
+        # In a two-person podcast MediaPipe alternates between left and right faces.
+        # Split detections by which horizontal half they land in, pick the majority.
+        # This locks the crop to ONE speaker for the whole clip.
+        raw_cx = np.full(n_frames, float(frame_w // 2), dtype=np.float64)
+
+        if detections:
+            mid        = frame_w / 2
+            left_dets  = {fi: cx for fi, cx in detections.items() if cx <  mid}
+            right_dets = {fi: cx for fi, cx in detections.items() if cx >= mid}
+            primary    = left_dets if len(left_dets) >= len(right_dets) else right_dets
+            dom_side   = "left"    if len(left_dets) >= len(right_dets) else "right"
+            print(f"  [FaceTrack] dominant speaker: {dom_side}  "
+                  f"({len(primary)}/{len(detections)} detections kept)")
+
+            if primary:
+                # Forward-fill: hold each detection until the next one.
+                # Never interpolate across a gap -- that would pan the camera.
+                keys      = sorted(primary.keys())
+                last_cx   = float(primary[keys[0]])
+                det_map   = {fi: float(primary[fi]) for fi in keys}
+                for f in range(n_frames):
+                    if f in det_map:
+                        last_cx = det_map[f]
+                    raw_cx[f] = last_cx
+                raw_cx[: keys[0]] = float(primary[keys[0]])
+
+        elif frames_for_variance:
+            # Zero face detections -- pixel-variance picks left vs right speaker
             third     = frame_w // 3
-            left_var  = float(np.var(np.array([f[:, :third]       for f in frames_sampled], dtype=np.float32)))
-            right_var = float(np.var(np.array([f[:, 2 * third:]   for f in frames_sampled], dtype=np.float32)))
-            cx    = third // 2 if left_var > right_var else 2 * third + third // 2
-            x_off = max(0, min(cx - crop_w // 2, frame_w - crop_w))
-            return x_off, crop_w, frame_h
+            left_var  = float(np.var(np.array(
+                [f[:, :third] for f in frames_for_variance], dtype=np.float32)))
+            right_var = float(np.var(np.array(
+                [f[:, 2 * third:] for f in frames_for_variance], dtype=np.float32)))
+            dom_cx    = third // 2 if left_var > right_var else 2 * third + third // 2
+            raw_cx[:] = float(dom_cx)
+            print(f"  [FaceTrack] no faces -- variance fallback -> "
+                  f"{'left' if left_var > right_var else 'right'} side (cx={dom_cx})")
 
-        return None
+        # ── EMA smoothing: alpha=0.04 ~ 25-frame lag ──────────────────────────
+        # Low alpha = locked/stable feel for static podcast shots.
+        # The crop barely moves; only follows large, sustained head shifts.
+        ALPHA     = 0.04
+        smooth    = np.empty(n_frames, dtype=np.float64)
+        smooth[0] = raw_cx[0]
+        for f in range(1, n_frames):
+            smooth[f] = ALPHA * raw_cx[f] + (1.0 - ALPHA) * smooth[f - 1]
 
-    except Exception:
-        return None
+        # ── Velocity cap: max 0.4% of frame width per frame ───────────────────
+        # ~5px per frame at 1280px wide = very gentle drift, never a pan.
+        max_vel = frame_w * 0.004
+        for f in range(1, n_frames):
+            delta = smooth[f] - smooth[f - 1]
+            if abs(delta) > max_vel:
+                smooth[f] = smooth[f - 1] + (max_vel if delta > 0 else -max_vel)
 
+        # Convert smoothed center-x to crop boxes
+        result = []
+        for cx in smooth:
+            x = int(round(float(cx))) - crop_w // 2
+            x = max(0, min(x, max_x))
+            result.append((x, y, crop_w, crop_h))
+        return result
+
+    except Exception as e:
+        print(f"  [FaceTrack] error: {e} -- center-crop fallback")
+        try:
+            import cv2 as _cv2
+            _cap = _cv2.VideoCapture(video_path)
+            fw   = int(_cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+            fh   = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+            _cap.release()
+        except Exception:
+            fw, fh = 1280, 720
+        ch = fh
+        cw = min(int(round(fh * 9 / 16)), fw)
+        if cw == fw:
+            ch = int(round(fw * 16 / 9))
+        x = (fw - cw) // 2
+        y = (fh - ch) // 2
+        return [(x, y, cw, ch)] * n_frames
 
 
 def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3, hook=""):
     """
-    Single encode pass: extract frames from section with crop/scale applied,
-    paste subtitles with Pillow, then encode exactly once. Eliminates generational
-    quality loss from double-encoding.
+    Render a single clip with blur-background 9:16 framing.
+
+    Pipeline:
+      1. Extract raw frames from source via ffmpeg
+      2. Per frame: scale source to cover 1080x1920 + blur (background),
+         scale source to fit width (foreground), center fg on blurred bg
+      3. Overlay logo and karaoke subtitles
+      4. Encode frames + audio in a single pass
     """
-    W, H = 720, 1280
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-    # Smart crop: center on detected face, fall back to dead-center if no face found
-    face_result = _smart_crop_x(section_path, offset_seconds, duration)
+    W, H = 1080, 1920
 
-    # Probe source FPS first — needed for Ken Burns frame-count expression
+    # Probe source FPS
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=avg_frame_rate", "-of", "csv=p=0", section_path],
@@ -505,27 +655,7 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     except Exception:
         fps = 30.0
 
-    # Ken Burns zoom-in using frame number `n` (not timestamp `t`).
-    # `t` carries the source PTS which starts at offset_seconds, not 0 — so
-    # min(t/duration,1) would equal 1 immediately for mid-video clips.
-    # `n` always starts at 0 for the first frame regardless of source PTS.
-    # At n=0:          crop=756x1344 (full oversized) → content at 1.0x
-    # At n=total_frames: crop=720x1280 (tight center) → content at 1.05x
-    N = max(1, int(duration * fps))
-    ken_burns = (
-        f"scale=756:1344:flags=lanczos,"
-        f"crop='756-36*min(n/{N},1)':'1344-64*min(n/{N},1)':"
-        f"'(756-ow)/2':'(1344-oh)/2',"
-        f"scale=720:1280:flags=lanczos"
-    )
-
-    if face_result:
-        x_off, crop_w, frame_h = face_result
-        crop_scale = f"crop={crop_w}:{frame_h}:{x_off}:0,{ken_burns},unsharp=3:3:0.5:3:3:0.0"
-    else:
-        crop_scale = f"crop=ih*9/16:ih:(iw-ih*9/16)/2:0,{ken_burns},unsharp=3:3:0.5:3:3:0.0"
-
-    # Audio enhancement: cut low rumble, boost voice presence, normalise to -14 LUFS
+    # Audio: cut low rumble, boost voice presence, normalise to -14 LUFS
     audio_filter = (
         "highpass=f=80,"
         "equalizer=f=300:width_type=o:width=1:g=-3,"
@@ -533,127 +663,154 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         "loudnorm=I=-14:TP=-1:LRA=11"
     )
 
-    # ── Fast path: no subtitle words → skip PIL frame extraction entirely ──────
-    if not words:
-        subprocess.run([
-            "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
-            "-t", str(duration), "-vf", crop_scale,
-            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-            "-af", audio_filter,
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p", output_path, "-y",
-        ], check=True, capture_output=True)
-        return
-
-    # ── Step 1: Extract frames with crop/scale (decode only, no lossy encode) ──
+    # ── 1. Extract raw frames ────────────────────────────────────────────────
     frames_dir = os.path.join(tmpdir, f"frames_{clip_idx}")
     os.makedirs(frames_dir, exist_ok=True)
     subprocess.run([
-        "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
-        "-t", str(duration), "-vf", crop_scale,
+        "ffmpeg",
+        "-ss", str(offset_seconds), "-i", section_path,
+        "-t", str(duration),
         os.path.join(frames_dir, "frame_%06d.png"), "-y",
     ], check=True, capture_output=True)
 
-    # ── Step 2: Pre-render subtitles — white box, dark text, sentence case ──────
-    # Style matches reference: white rounded-rect background, near-black bold text,
-    # sentence case, 4-word chunks shown all at once (no karaoke word-by-word).
-    from PIL import Image, ImageDraw, ImageFont
-    base_font_size = max(52, H // 16)
-    font_candidates = [
-        "/Library/Fonts/SF-Pro-Display-Bold.otf",
-        "/Library/Fonts/SF-Pro.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/System/Library/Fonts/SFNS.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    ]
-    font_path = next((p for p in font_candidates if os.path.exists(p)), None)
+    # ── 3. Pre-render subtitle images ────────────────────────────────────────
+    subtitle_data = []   # list of (start_sec, end_sec, PIL Image, x, y)
+    if words:
+        base_font_size = max(52, H // 16)
+        font_candidates = [
+            "/Library/Fonts/SF-Pro-Display-Bold.otf",
+            "/Library/Fonts/SF-Pro.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/SFNS.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        ]
+        font_path = next((p for p in font_candidates if os.path.exists(p)), None)
 
-    subtitle_data = []
-    tmp_draw  = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    max_text_w = int(W * 0.82)   # leave generous side margins
-    pad_h     = 22               # horizontal padding inside box
-    pad_v     = 14               # vertical padding inside box
-    radius    = 10               # rounded corner radius
-    text_color = (15, 15, 15, 255)   # near-black
-    box_color  = (255, 255, 255, 235) # white, very slightly transparent
+        tmp_draw   = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        max_text_w = int(W * 0.82)
+        pad_h, pad_v, radius = 22, 14, 10
+        text_color = (15, 15, 15, 255)
+        box_color  = (255, 255, 255, 235)
+        max_sub_h  = base_font_size + 2 * pad_v
+        sub_y      = int(H * 0.65) - max_sub_h
 
-    # Bottom of subtitle box anchored at 65% from top (safe from platform UI)
-    max_sub_h = base_font_size + 2 * pad_v
-    sub_y     = int(H * 0.65) - max_sub_h
+        for ci in range(0, len(words), chunk_size):
+            chunk = words[ci:ci + chunk_size]
+            if not chunk:
+                continue
 
-    for ci in range(0, len(words), chunk_size):
-        chunk = words[ci:ci + chunk_size]
-        if not chunk:
-            continue
+            chunk_texts = [wd["word"].strip() for wd in chunk]
+            if chunk_texts:
+                chunk_texts[0] = chunk_texts[0][:1].upper() + chunk_texts[0][1:]
+            full_text = " ".join(chunk_texts)
 
-        start = chunk[0]["start"]
-        end   = chunk[-1]["end"]
-
-        # Sentence case: first letter capitalised, rest as transcribed
-        raw   = " ".join(wd["word"].strip() for wd in chunk)
-        text  = raw[:1].upper() + raw[1:] if raw else ""
-
-        # Shrink font until text fits within max_text_w
-        size = base_font_size
-        font = None
-        while size >= 28:
-            try:
-                font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
-            except Exception:
+            # Find the largest font size that fits the full chunk text
+            size = base_font_size
+            font = None
+            while size >= 28:
+                try:
+                    font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+                except Exception:
+                    font = ImageFont.load_default()
+                bb = tmp_draw.textbbox((0, 0), full_text, font=font)
+                if bb[2] - bb[0] <= max_text_w:
+                    break
+                size -= 4
+            if font is None:
                 font = ImageFont.load_default()
-            bb = tmp_draw.textbbox((0, 0), text, font=font)
-            if bb[2] - bb[0] <= max_text_w:
-                break
-            size -= 4
-        if font is None:
-            font = ImageFont.load_default()
 
-        bb     = tmp_draw.textbbox((0, 0), text, font=font)
-        text_w = bb[2] - bb[0]
-        text_h = bb[3] - bb[1]
+            bb     = tmp_draw.textbbox((0, 0), full_text, font=font)
+            text_w = bb[2] - bb[0]
+            text_h = bb[3] - bb[1]
+            img_w  = text_w + 2 * pad_h
+            img_h  = text_h + 2 * pad_v
+            x_pos  = max(10, (W - img_w) // 2)
 
-        img_w = text_w + 2 * pad_h
-        img_h = text_h + 2 * pad_v
-        img   = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
-        draw  = ImageDraw.Draw(img)
+            # One subtitle image per word -- same white box, advances word by word
+            for word in chunk:
+                img  = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                draw.rounded_rectangle([(0, 0), (img_w - 1, img_h - 1)],
+                                       radius=radius, fill=box_color)
+                draw.text((pad_h, pad_v - bb[1]), full_text, font=font, fill=text_color)
+                subtitle_data.append((word["start"], word["end"], img, x_pos, sub_y))
 
-        # White rounded rectangle background
-        draw.rounded_rectangle([(0, 0), (img_w - 1, img_h - 1)], radius=radius, fill=box_color)
+    # ── 4. Load logo ──────────────────────────────────────────────────────────
+    logo_img = None
+    logo_w   = max(160, W // 4)
+    try:
+        logo_img = Image.open(LOGO_PATH).convert("RGBA")
+        lh       = int(logo_img.height * logo_w / logo_img.width)
+        logo_img = logo_img.resize((logo_w, lh), Image.LANCZOS)
+    except Exception:
+        pass
 
-        # Dark text — drawn at (pad_h, pad_v - bb[1]) so descenders don't clip
-        draw.text((pad_h, pad_v - bb[1]), text, font=font, fill=text_color)
-
-        x_pos = max(10, (W - img_w) // 2)
-        subtitle_data.append((start, end, img, x_pos, sub_y))
-
-    # ── Step 3: Paste subtitles onto extracted frames ──────────
+    # ── 5. Process each frame: blur-bg composite -> overlays ─────────────────
     frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
     for fi, fname in enumerate(frame_files):
-        t = fi / fps
-        fp = os.path.join(frames_dir, fname)
+        fp        = os.path.join(frames_dir, fname)
+        frame_img = Image.open(fp).convert("RGB")
+        fw, fh    = frame_img.size
 
-        for start, end, sub_img, x, y in subtitle_data:
-            if start <= t < end:
-                frame = Image.open(fp).convert("RGBA")
-                frame.paste(sub_img, (x, y), sub_img)
-                frame.convert("RGB").save(fp)
-                break
+        # Blurred background: scale to cover full 1080x1920 canvas, then blur
+        bg_scale = max(W / fw, H / fh)
+        bg = frame_img.resize((int(fw * bg_scale), int(fh * bg_scale)), Image.LANCZOS)
+        bw, bh = bg.size
+        bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=25))
 
-    # ── Step 4: Single encode — frames + audio from section ───────────────────
+        # Foreground: scale to fill 50% of canvas height, center-crop to canvas width
+        # Bars become ~25% each (down from ~34% with fit-width)
+        fg_h = H // 2
+        fg_w = int(fw * fg_h / fh)
+        fg   = frame_img.resize((fg_w, fg_h), Image.LANCZOS)
+        if fg_w > W:
+            cx = (fg_w - W) // 2
+            fg = fg.crop((cx, 0, cx + W, fg_h))
+        fg = fg.filter(ImageFilter.UnsharpMask(radius=1.5, percent=80, threshold=3))
+
+        # Center fg vertically on the blurred bg
+        paste_y = (H - fg_h) // 2
+        output  = bg.copy()
+        output.paste(fg, (0, paste_y))
+
+        # Convert to RGBA for alpha compositing
+        output = output.convert("RGBA")
+
+        # Paste logo (top-left area, well above subtitle zone)
+        if logo_img is not None:
+            output.paste(logo_img, (120, 160), logo_img)
+
+        # Paste active subtitle
+        t          = fi / fps
+        active_sub = next(
+            ((si, sx, sy) for s, e, si, sx, sy in subtitle_data if s <= t < e),
+            None,
+        )
+        if active_sub is not None:
+            sub_img, sx, sy = active_sub
+            output.paste(sub_img, (sx, sy), sub_img)
+
+        output.convert("RGB").save(fp)
+
+    # ── 6. Single encode pass: frames + audio ─────────────────────────────────
     subprocess.run([
         "ffmpeg",
         "-framerate", str(fps),
         "-i", os.path.join(frames_dir, "frame_%06d.png"),
         "-ss", str(offset_seconds), "-t", str(duration), "-i", section_path,
         "-map", "0:v", "-map", "1:a",
-        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+        "-maxrate", "3500k", "-bufsize", "7000k",
         "-af", audio_filter,
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         "-pix_fmt", "yuv420p", "-shortest",
         output_path, "-y",
     ], check=True, capture_output=True)
+
+    shutil.rmtree(frames_dir, ignore_errors=True)
 
 
 # ── Subtitles ──────────────────────────────────────────────────────────────────
@@ -682,23 +839,33 @@ def upload_clip(supabase, local_path, storage_path):
         "Content-Type": "video/mp4",
         "x-upsert": "true",
     }
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             resp = requests.post(upload_url, data=data, headers=headers, timeout=300)
             break
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            if attempt == 2:
+        except Exception as e:
+            if attempt == 4:
                 raise
-            import time; time.sleep(5 * (attempt + 1))
+            wait = 15 * (attempt + 1)
+            print(f"  Upload attempt {attempt+1} failed ({e.__class__.__name__}), retrying in {wait}s...")
+            time.sleep(wait)
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"Upload failed ({resp.status_code}): {resp.text[:300]}")
     return supabase.storage.from_("clips").get_public_url(storage_path)
 
 
 def queue_clip(supabase, video_id, clip_index, storage_path, public_url, caption, hook, platform):
-    existing = supabase.table("clip_queue").select("id").eq("video_id", video_id).eq("clip_index", clip_index).eq("platform", platform).execute()
+    existing = supabase.table("clip_queue").select("id", "status").eq("video_id", video_id).eq("clip_index", clip_index).eq("platform", platform).execute()
     if existing.data:
-        return  # already queued, skip
+        if existing.data[0]["status"] == "pending":
+            # Update URL/caption in case clip was re-rendered
+            supabase.table("clip_queue").update({
+                "storage_path": storage_path,
+                "public_url": public_url,
+                "caption": caption,
+                "hook": hook,
+            }).eq("id", existing.data[0]["id"]).execute()
+        return
     supabase.table("clip_queue").insert({
         "video_id": video_id,
         "clip_index": clip_index,
@@ -719,7 +886,7 @@ def _load_transcript(supabase_admin, local_cache, video_id):
         with open(local_cache) as f:
             cached = json.load(f)
         if isinstance(cached, dict) and "words" in cached:
-            print(f"\n[CACHED] Transcript loaded locally — {len(cached['segments'])} segments")
+            print(f"\n[CACHED] Transcript loaded locally -- {len(cached['segments'])} segments")
             return cached["segments"], cached["words"]
 
     try:
@@ -727,7 +894,7 @@ def _load_transcript(supabase_admin, local_cache, video_id):
         if result.data:
             cached = json.loads(result.data[0]["transcript"])
             segments, words = cached["segments"], cached.get("words", [])
-            print(f"\n[SUPABASE] Transcript loaded — {len(segments)} segments")
+            print(f"\n[SUPABASE] Transcript loaded -- {len(segments)} segments")
             with open(local_cache, "w") as f:
                 json.dump(cached, f)
             return segments, words
@@ -774,10 +941,22 @@ def main():
     parser.add_argument("--video_id", required=True)
     parser.add_argument("--url", required=True)
     parser.add_argument("--title", required=True)
+    parser.add_argument("--max_clips", type=int, default=None, help="Limit number of clips (for testing)")
     args = parser.parse_args()
 
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    # Retry initial Supabase connection -- DNS can flake briefly on this machine
+    for _attempt in range(5):
+        try:
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+            supabase_admin.table("video_clip_plans").select("video_id").limit(1).execute()
+            break
+        except Exception as _e:
+            if _attempt == 4:
+                raise
+            print(f"  [Network] Supabase unreachable ({_e.__class__.__name__}), retrying in 15s...")
+            time.sleep(15)
+
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     os.makedirs("transcripts", exist_ok=True)
@@ -785,13 +964,13 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmpdir:
 
-        # ── Check for resumable clip plan in Supabase ──────────────────────────
+        # Check for resumable clip plan in Supabase
         pending_rows = supabase_admin.table("video_clip_plans") \
             .select("*").eq("video_id", args.video_id).neq("status", "done") \
             .order("clip_index").execute()
 
         if pending_rows.data:
-            print(f"\n[RESUME] {len(pending_rows.data)} unfinished clips found — skipping audio/transcription/Claude")
+            print(f"\n[RESUME] {len(pending_rows.data)} unfinished clips found -- skipping audio/transcription/Claude")
             segments, words = _load_transcript(supabase_admin, transcript_cache, args.video_id)
             clips_to_process = []
             for row in pending_rows.data:
@@ -806,11 +985,13 @@ def main():
                     "hook": row.get("hook", ""),
                     "captions": captions,
                 })
+            if args.max_clips:
+                clips_to_process = clips_to_process[:args.max_clips]
             total_clips = supabase_admin.table("video_clip_plans") \
                 .select("clip_index", count="exact").eq("video_id", args.video_id).execute()
             total = total_clips.count or len(clips_to_process)
         else:
-            # ── PASS 1: Audio → Transcript ─────────────────────────────────────
+            # PASS 1: Audio -> Transcript
             segments, words = _load_transcript(supabase_admin, transcript_cache, args.video_id)
 
             if segments is None:
@@ -824,7 +1005,7 @@ def main():
                 print(f"  {len(segments)} transcript segments, {len(words)} words")
                 _save_transcript(supabase_admin, transcript_cache, args.video_id, segments, words)
 
-            # ── Claude picks clips ─────────────────────────────────────────────
+            # Claude picks clips
             print("\n[Claude] Selecting viral clips from transcript...")
             all_clips = select_clips(anthropic_client, segments, args.title, supabase_admin)
             print(f"  {len(all_clips)} clips selected")
@@ -833,24 +1014,24 @@ def main():
                 print("No valid clips returned by Claude. Exiting.", file=sys.stderr)
                 sys.exit(1)
 
+            if args.max_clips:
+                all_clips = all_clips[:args.max_clips]
+
             _save_clip_plan(supabase_admin, args.video_id, all_clips)
-            _log_clip_selections(supabase_admin, args.video_id, all_clips)
+            _log_clip_selections(supabase_admin, args.video_id, all_clips, segments=segments)
 
             for i, clip in enumerate(all_clips):
-                print(f"  [{i+1}] {to_hhmmss(clip['start_seconds'])} → {to_hhmmss(clip['end_seconds'])} | {clip['hook'][:65]}")
+                print(f"  [{i+1}] {to_hhmmss(clip['start_seconds'])} -> {to_hhmmss(clip['end_seconds'])} | {clip['hook'][:65]}")
 
             clips_to_process = [{"clip_index": i, **clip} for i, clip in enumerate(all_clips)]
             total = len(all_clips)
 
-        # ── PASS 2: Download full video once → cut each clip locally ────────────
-        # Downloading sections via --download-sections causes ffmpeg to fetch CDN
-        # URLs directly, which YouTube blocks with 403. Downloading the full video
-        # uses yt-dlp's own downloader (which works), then we cut locally.
+        # PASS 2: Download full video once -> cut each clip locally
         full_video_path = os.path.join(tmpdir, f"{args.video_id}_full.mp4")
         print(f"\n[2/2 downloads] Downloading full video at 720p (this takes a few minutes)...")
         download_full_video(args.url, full_video_path)
         full_mb = os.path.getsize(full_video_path) / 1024 / 1024
-        print(f"  Downloaded: {full_mb:.0f}MB → cutting {len(clips_to_process)} clips locally...")
+        print(f"  Downloaded: {full_mb:.0f}MB -> cutting {len(clips_to_process)} clips locally...")
 
         succeeded = 0
         for item in clips_to_process:
@@ -862,7 +1043,7 @@ def main():
             clip_path = os.path.join(tmpdir, f"{args.video_id}_clip_{i}.mp4")
             storage_path = f"{args.video_id}/{args.video_id}_clip_{i}.mp4"
 
-            print(f"\n  [{i+1}/{total}] {to_hhmmss(start_s)} → {to_hhmmss(end_s)} ({duration:.0f}s)")
+            print(f"\n  [{i+1}/{total}] {to_hhmmss(start_s)} -> {to_hhmmss(end_s)} ({duration:.0f}s)")
             try:
                 clip_words = words_for_clip(words, start_s, end_s) if words else []
                 print(f"  Cutting, cropping, burning subtitles ({len(clip_words)} words)...")
@@ -890,14 +1071,14 @@ def main():
                 succeeded += 1
 
             except Exception as e:
-                print(f"  ✗ Clip {i+1} failed: {e} — skipping, continuing...")
+                print(f"  x Clip {i+1} failed: {e} -- skipping, continuing...")
                 supabase_admin.table("video_clip_plans").update({"status": "failed"}) \
                     .eq("video_id", args.video_id).eq("clip_index", i).execute()
                 if os.path.exists(clip_path):
                     os.remove(clip_path)
                 continue
 
-        # ── Mark processed ─────────────────────────────────────────────────────
+        # Mark processed
         if succeeded > 0:
             existing = supabase_admin.table("processed_videos").select("id") \
                 .eq("video_id", args.video_id).execute()
@@ -910,11 +1091,11 @@ def main():
                 }).execute()
 
             platforms = ["instagram", "tiktok", "youtube", "facebook"]
-            print(f"\n✓ Done. {succeeded}/{total} clips queued — {succeeded * len(platforms)} posts scheduled.")
+            print(f"\nDone. {succeeded}/{total} clips queued -- {succeeded * len(platforms)} posts scheduled.")
             if succeeded < total:
-                print(f"  ⚠ {total - succeeded} clips failed. Re-run to retry — clip plan is saved in Supabase.")
+                print(f"  {total - succeeded} clips failed. Re-run to retry -- clip plan is saved in Supabase.")
         else:
-            print(f"\n✗ All {total} clips failed.", file=sys.stderr)
+            print(f"\nAll {total} clips failed.", file=sys.stderr)
             sys.exit(1)
 
 

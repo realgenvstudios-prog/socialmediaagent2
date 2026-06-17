@@ -416,6 +416,92 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
         return ""
 
 
+# ── Content pattern analysis ───────────────────────────────────────────────────
+
+def build_content_analysis(zernio_map: dict[str, dict]) -> str:
+    """
+    Compare the actual transcript text of top vs bottom performing clips.
+    Identifies structural patterns — openings, endings, content density, arc —
+    that separate clips that perform well from those that don't.
+    """
+    try:
+        # Prefer clips with transcript text stored
+        rows = (
+            sb.table("clip_selection_log")
+            .select("hook, clip_transcript, hook_type, topic_category, duration_seconds, performance_tier, views")
+            .not_.is_("performance_tier", "null")
+            .execute()
+        ).data or []
+
+        has_transcripts = any(r.get("clip_transcript") for r in rows)
+        top_clips    = [r for r in rows if r.get("performance_tier") == "top"]
+        bottom_clips = [r for r in rows if r.get("performance_tier") == "low"]
+
+        if len(top_clips) < 3:
+            return ""
+
+        if has_transcripts:
+            def fmt(r: dict) -> str:
+                parts = [f'Hook: "{r.get("hook", "")}"']
+                if r.get("clip_transcript"):
+                    parts.append(f"Full text: {r['clip_transcript'][:500]}")
+                if r.get("duration_seconds"):
+                    parts.append(f"Duration: {r['duration_seconds']}s")
+                return "\n  ".join(parts)
+
+            top_block    = "\n\n".join(fmt(r) for r in top_clips[:8])
+            bottom_block = "\n\n".join(fmt(r) for r in bottom_clips[:6]) if bottom_clips else "Not enough low-performer data yet."
+
+            prompt = f"""You are a clip-cutting specialist studying what makes short-form video clips succeed or fail.
+
+Analyse the FULL SPOKEN CONTENT of these clips and identify what structurally separates top performers from low performers.
+
+TOP PERFORMING CLIPS (high views):
+{top_block}
+
+LOW PERFORMING CLIPS (very few views):
+{bottom_block}
+
+Write specific, actionable rules for cutting better clips, covering:
+1. OPENING — How do the best clips begin? What is happening in the first 3 seconds? How do weak openers fail?
+2. STRUCTURE — Do top clips have a 3-part arc (setup, development, payoff)? Do low clips ramble or trail off?
+3. ENDING — How do the best clips END? Do they land on a punchline, a strong statement, or a specific result? What does a weak ending sound like?
+4. CONTENT DENSITY — One tight idea vs multiple scattered points. What does the data show?
+5. SPECIFICITY — Do the best clips have names, numbers, places, amounts? Or are they vague?
+
+Write 6-8 concrete rules the clip-selection AI should follow when choosing WHERE to cut a clip and what content to include. Each rule should be immediately applicable."""
+
+        else:
+            # No transcript yet — analyse hook text patterns only
+            top_hooks    = [f'"{r["hook"]}" ({r.get("duration_seconds") or "?"}s)' for r in top_clips[:10]]
+            bottom_hooks = [f'"{r["hook"]}" ({r.get("duration_seconds") or "?"}s)' for r in bottom_clips[:8]]
+
+            prompt = f"""You are a clip-cutting specialist studying what makes short-form video hooks succeed or fail.
+
+TOP PERFORMING HOOKS (high views):
+{chr(10).join(f'{i+1}. {h}' for i, h in enumerate(top_hooks))}
+
+LOW PERFORMING HOOKS (very few views):
+{chr(10).join(f'{i+1}. {h}' for i, h in enumerate(bottom_hooks)) if bottom_hooks else "Not enough data yet."}
+
+Based on these hooks, write 5-7 specific, concrete rules for choosing better clip opening moments. Focus on:
+- What structural elements make the top hooks immediately grab attention?
+- What makes the weak hooks fail?
+- What is the single most important difference between the two groups?
+Reference specific examples from the data above."""
+
+        resp = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=900,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        prefix = "CLIP CONTENT ANALYSIS (full transcript)" if has_transcripts else "CLIP CONTENT ANALYSIS (from hook text)"
+        return f"{prefix}:\n{resp.content[0].text}"
+    except Exception as e:
+        print(f"  Warning: content analysis failed: {e}")
+        return ""
+
+
 # ── Analysis ───────────────────────────────────────────────────────────────────
 
 def build_performance_dataset(clips: list[dict], zernio_map: dict[str, dict]) -> list[dict]:
@@ -559,6 +645,7 @@ def analyse_with_claude(
     timing_text: str,
     caption_text: str,
     follower_data: dict[str, int],
+    content_analysis: str,
 ) -> str:
     """Send all performance data to Claude for strategic analysis."""
     if not rows:
@@ -631,10 +718,11 @@ def analyse_with_claude(
         for platform, count in follower_data.items():
             follower_text += f"  {platform.upper()}: {count:,} followers\n"
 
-    decision_block   = f"\n{decision_history}\n"   if decision_history   else ""
-    timing_block     = f"\n{timing_text}\n"         if timing_text        else ""
-    caption_block    = f"\n{caption_text}\n"        if caption_text       else ""
-    algorithm_block  = f"\nPLATFORM ALGORITHM RESEARCH (current state):\n{algorithm_research}\n" if algorithm_research else ""
+    decision_block  = f"\n{decision_history}\n"                                              if decision_history  else ""
+    timing_block    = f"\n{timing_text}\n"                                                   if timing_text       else ""
+    caption_block   = f"\n{caption_text}\n"                                                  if caption_text      else ""
+    algorithm_block = f"\nPLATFORM ALGORITHM RESEARCH (current state):\n{algorithm_research}\n" if algorithm_research else ""
+    content_block   = f"\n{content_analysis}\n"                                              if content_analysis  else ""
 
     prompt = f"""You are an expert social media strategist and content agent for the Konnected Minds Podcast (Ghana-based business/entrepreneurship channel posting short-form clips to TikTok, Instagram Reels, YouTube Shorts, and Facebook Reels).
 
@@ -643,7 +731,7 @@ Your role is not just to analyse past performance — you must act as a smart, p
 Below is everything you need to know:
 
 {dataset_text}
-{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{algorithm_block}
+{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{content_block}{algorithm_block}
 
 Write a CHANNEL INTELLIGENCE BRIEF that the clip selection AI will read before picking and captioning clips from a new episode. This brief must make the AI smarter — not just reactive to past data, but genuinely strategic about growth.
 
@@ -657,13 +745,15 @@ Structure your brief around these sections:
 
 4. PLATFORM STRATEGY — For each platform (TikTok, Instagram, YouTube, Facebook), write a specific strategy combining: what this channel's data shows works, what the current algorithm rewards, and what caption tone/style/length to use. Make it specific to THIS channel and THIS audience.
 
-5. GROWTH TACTICS — Beyond just getting views on individual clips, what should the AI prioritise to grow followers and build a real audience? What types of content create saves, shares, and return viewers? How should the channel approach each platform differently for audience building?
+5. CLIP CUTTING QUALITY — Based on the content analysis, what structural patterns separate the clips that perform best? What does a strong clip opening, middle, and ending look like for this channel? What should the AI prioritise when choosing exactly where to START and STOP a cut? What types of content create saves, shares, and return viewers? How should the channel approach each platform differently for audience building?
 
-6. POSTING TIMING — Based on the timing data, when should content be posted for maximum reach?
+6. GROWTH TACTICS — Beyond individual clip views, what should the AI prioritise to grow followers and build a real audience? What content creates saves, shares, and return viewers?
 
-7. WHAT TO AVOID — Specific traits of the lowest performers. What types of hooks, topics, and caption styles are actively hurting performance?
+7. POSTING TIMING — Based on the timing data, when should content be posted for maximum reach?
 
-8. ACTIONABLE RULES — 8 to 10 specific, concrete rules for clip selection AND caption writing. Each rule must be direct and immediately applicable (e.g. "On TikTok, always prioritise confession hooks — they average 2x the channel's TikTok mean. Never use advice hooks as openers on TikTok.").
+8. WHAT TO AVOID — Specific traits of the lowest performers. What hooks, topics, caption styles, and clip structures are actively hurting performance?
+
+9. ACTIONABLE RULES — 10 to 12 specific, concrete rules for clip selection, cutting decisions, AND caption writing. Each rule must be direct and immediately applicable (e.g. "On TikTok, always prioritise confession hooks — they average 2x the channel's TikTok mean. Never use advice hooks as openers on TikTok.").
 
 Be specific, data-driven, and opinionated. Reference real numbers and real hook examples from the data. Write as if you are briefing a junior social media manager — clear, direct, no fluff."""
 
@@ -729,6 +819,9 @@ def main():
     print("Building caption analysis...")
     caption_text = build_caption_analysis(rows)
 
+    print("Building clip content analysis...")
+    content_analysis = build_content_analysis(zernio_map)
+
     stats = {
         "clips_analysed":  len(rows),
         "total_views":     sum(r["views"] for r in rows),
@@ -740,7 +833,7 @@ def main():
     }
 
     print("Sending to Claude for strategic analysis...")
-    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data)
+    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data, content_analysis)
     print("  Analysis complete.")
     print("\n--- INTELLIGENCE BRIEF PREVIEW ---")
     print(summary[:600] + ("..." if len(summary) > 600 else ""))
