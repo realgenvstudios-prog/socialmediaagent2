@@ -1,42 +1,40 @@
 #!/usr/bin/env python3
 """
 Analyses historical clip performance and extracts actionable patterns
-that Claude uses when selecting clips for future videos.
+that the AI uses when selecting clips for future videos.
 
-Runs daily via GitHub Actions. Reads Zernio analytics + Supabase clip
-metadata, sends the data to Claude, and saves the resulting intelligence
-summary back to Supabase so process_video.py can inject it into the
-clip-selection prompt.
+Runs daily via GitHub Actions. Reads analytics + Supabase clip metadata,
+researches current platform algorithms via web search, and saves the
+resulting intelligence brief back to Supabase so process_video.py can
+inject it into the clip-selection prompt.
 """
 
 import os
 import json
 import requests
 from datetime import datetime, timezone
+from collections import defaultdict
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL       = os.environ["SUPABASE_URL"]
-SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ["SUPABASE_KEY"]
-ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
-ZERNIO_KEY_1       = os.environ["ZERNIO_API_KEY"]       # instagram + tiktok
-ZERNIO_KEY_2       = os.environ["ZERNIO_API_KEY_2"]     # youtube + facebook
+SUPABASE_URL      = os.environ["SUPABASE_URL"]
+SUPABASE_KEY      = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ["SUPABASE_KEY"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+ZERNIO_KEY_1      = os.environ["ZERNIO_API_KEY"]    # instagram + tiktok
+ZERNIO_KEY_2      = os.environ["ZERNIO_API_KEY_2"]  # youtube + facebook
 
 import anthropic
 from supabase import create_client
 
-sb      = create_client(SUPABASE_URL, SUPABASE_KEY)
-claude  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+sb     = create_client(SUPABASE_URL, SUPABASE_KEY)
+claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-# ── Zernio helpers ────────────────────────────────────────────────────────────
+# ── Zernio helpers ─────────────────────────────────────────────────────────────
 
 def fetch_zernio_all_posts() -> dict[str, dict]:
-    """
-    Fetch all posts from both Zernio accounts (all pages).
-    Returns a map of latePostId → post dict.
-    """
+    """Fetch all posts from both accounts. Returns latePostId → post dict."""
     posts_map: dict[str, dict] = {}
     for key in [ZERNIO_KEY_1, ZERNIO_KEY_2]:
         page = 1
@@ -59,13 +57,58 @@ def fetch_zernio_all_posts() -> dict[str, dict]:
     return posts_map
 
 
-# ── Supabase helpers ──────────────────────────────────────────────────────────
+def fetch_follower_counts() -> dict[str, int]:
+    """
+    Probe Zernio account endpoints for follower counts per platform.
+    Returns a dict like {"instagram": 1420, "tiktok": 830, ...} or empty if unavailable.
+    """
+    follower_counts: dict[str, int] = {}
+    PLATFORM_KEYS = {
+        "instagram": ZERNIO_KEY_1,
+        "tiktok":    ZERNIO_KEY_1,
+        "youtube":   ZERNIO_KEY_2,
+        "facebook":  ZERNIO_KEY_2,
+    }
+    probe_endpoints = ["/api/v1/accounts", "/api/v1/channels", "/api/v1/profile", "/api/v1/stats"]
+
+    for key in set(PLATFORM_KEYS.values()):
+        for endpoint in probe_endpoints:
+            try:
+                resp = requests.get(
+                    f"https://zernio.com{endpoint}",
+                    headers={"Authorization": f"Bearer {key}"},
+                    timeout=10,
+                )
+                if not resp.ok:
+                    continue
+                data = resp.json()
+                raw = json.dumps(data).lower()
+                print(f"  Zernio {endpoint}: {raw[:300]}")
+                # Parse follower/subscriber counts from whatever structure comes back
+                for item in (data if isinstance(data, list) else [data]):
+                    platform = (
+                        item.get("platform") or item.get("network") or item.get("type") or ""
+                    ).lower()
+                    for field in ["followers", "followerCount", "subscribers", "subscriberCount", "fans"]:
+                        count = item.get(field) or item.get(field.lower())
+                        if count and isinstance(count, int) and platform:
+                            follower_counts[platform] = count
+                if follower_counts:
+                    break
+            except Exception:
+                continue
+        if follower_counts:
+            break
+
+    if not follower_counts:
+        print("  Follower counts not available via API (endpoint not found).")
+    return follower_counts
+
+
+# ── Supabase helpers ───────────────────────────────────────────────────────────
 
 def fetch_clip_metadata() -> list[dict]:
-    """
-    Pull posted clips with their hook text and duration from Supabase.
-    Joins clip_queue with video_clip_plans for duration.
-    """
+    """Pull posted clips with hooks, captions, durations, and timestamps."""
     clips = (
         sb.table("clip_queue")
         .select("video_id, clip_index, platform, zernio_post_id, hook, caption, posted_at")
@@ -77,7 +120,6 @@ def fetch_clip_metadata() -> list[dict]:
         .execute()
     ).data or []
 
-    # Fetch durations from video_clip_plans
     plans_raw = (
         sb.table("video_clip_plans")
         .select("video_id, clip_index, start_seconds, end_seconds")
@@ -89,12 +131,10 @@ def fetch_clip_metadata() -> list[dict]:
         key = (clip["video_id"], clip["clip_index"])
         plan = plans.get(key)
         clip["duration_seconds"] = (
-            round(plan["end_seconds"] - plan["start_seconds"])
-            if plan else None
+            round(plan["end_seconds"] - plan["start_seconds"]) if plan else None
         )
-        # Parse caption JSON if needed
         try:
-            clip["captions"] = json.loads(clip["caption"]) if isinstance(clip["caption"], str) else clip["caption"]
+            clip["captions"] = json.loads(clip["caption"]) if isinstance(clip["caption"], str) else (clip["caption"] or {})
         except Exception:
             clip["captions"] = {}
 
@@ -104,26 +144,128 @@ def fetch_clip_metadata() -> list[dict]:
 def save_intelligence(summary: str, stats: dict) -> None:
     sb.table("channel_intelligence").upsert(
         {
-            "id": "singleton",
+            "id":         "singleton",
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "summary": summary,
-            "stats": stats,
+            "summary":    summary,
+            "stats":      stats,
         },
         on_conflict="id",
     ).execute()
     print("  Saved channel intelligence to Supabase.")
 
 
-# ── Decision outcome tracking ─────────────────────────────────────────────────
+# ── Algorithm research ─────────────────────────────────────────────────────────
+
+def research_platform_algorithms() -> str:
+    """
+    Research current platform algorithm priorities via web search.
+    Cached in Supabase settings for 7 days to limit cost.
+    Falls back to Claude's training knowledge if web search is unavailable.
+    """
+    CACHE_KEY = "algorithm_research_v2"
+
+    try:
+        cached = sb.table("settings").select("value").eq("key", CACHE_KEY).single().execute()
+        if cached.data:
+            val = cached.data.get("value") or {}
+            updated_at = val.get("updated_at", "")
+            if updated_at:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).days
+                if age < 7 and val.get("text"):
+                    print(f"  Using cached algorithm research ({age}d old).")
+                    return val["text"]
+    except Exception:
+        pass
+
+    print("  Running platform algorithm research...")
+
+    prompt = """You are a social media growth expert researching the current state of short-form video algorithms in 2025.
+
+Research and write specific, actionable insights on the algorithm priorities for each platform:
+
+TIKTOK: What signals the algorithm prioritises right now (completion rate, shares, saves, early engagement velocity, replays, etc.), what content types it is currently boosting vs suppressing, how it distributes content to non-followers, what drives real follower growth vs just views.
+
+INSTAGRAM REELS: How the algorithm distributes to non-followers, what actions it rewards most (saves, shares, comments, DMs), what the Explore page prioritises, how non-follower reach works in 2025.
+
+YOUTUBE SHORTS: What drives recommendations and the Shorts shelf, how video titles and thumbnails affect CTR, what watch signals matter, what drives subscriber conversion.
+
+FACEBOOK REELS: Who it reaches and how, what engagement signals matter most, how it differs from Instagram, how to use it for actual audience growth.
+
+For each platform: focus on what ACTUALLY drives follower growth and long-term audience building, not just one-off viral views. Include any significant algorithm changes in the last 12 months worth knowing.
+
+Context: Konnected Minds is an African entrepreneurship podcast channel (Ghana-based) posting 60-second clips 3 times per day. Audience is business-minded 20-45 year olds interested in money, hustle, real stories, and Africa-specific business topics.
+
+Write specific, data-backed insights only. No padding."""
+
+    text = ""
+
+    # Try with web search tool first
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=3000,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages,
+        )
+        for _ in range(6):
+            if response.stop_reason != "tool_use":
+                break
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = [
+                {"type": "tool_result", "tool_use_id": b.id, "content": ""}
+                for b in response.content
+                if hasattr(b, "type") and b.type == "tool_use"
+            ]
+            if not tool_results:
+                break
+            messages.append({"role": "user", "content": tool_results})
+            response = claude.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=3000,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=messages,
+            )
+        text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        if text:
+            print("  Web search algorithm research complete.")
+    except Exception as e:
+        print(f"  Web search unavailable ({type(e).__name__}), using knowledge base.")
+
+    # Fallback: Claude's training knowledge
+    if not text:
+        try:
+            resp = claude.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = resp.content[0].text
+            print("  Knowledge-based algorithm research complete.")
+        except Exception as e:
+            print(f"  Algorithm research failed: {e}")
+            return ""
+
+    # Cache result
+    try:
+        sb.table("settings").upsert({
+            "key":   CACHE_KEY,
+            "value": {"text": text, "updated_at": datetime.now(timezone.utc).isoformat()},
+        }, on_conflict="key").execute()
+    except Exception:
+        pass
+
+    return text
+
+
+# ── Decision outcome tracking ──────────────────────────────────────────────────
 
 def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
     """
-    Match logged clip selections to their real analytics and fill in
-    performance data. Assigns a performance tier (top / mid / low)
-    based on views relative to the channel average.
+    Match logged clip selections to real analytics and fill in performance data.
+    Assigns a performance tier (top / mid / low) relative to channel average.
     """
     try:
-        # Get all selection log entries that haven't been updated yet
         pending = (
             sb.table("clip_selection_log")
             .select("id, video_id, clip_index")
@@ -135,8 +277,6 @@ def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
             print("  No pending selection outcomes to update.")
             return
 
-        # Get zernio_post_ids from clip_queue for matching
-        video_clip_pairs = [(r["video_id"], r["clip_index"]) for r in pending]
         queue_rows = (
             sb.table("clip_queue")
             .select("video_id, clip_index, platform, zernio_post_id")
@@ -145,7 +285,6 @@ def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
             .execute()
         ).data or []
 
-        # Build lookup: (video_id, clip_index) → best available analytics
         best_analytics: dict[tuple, dict] = {}
         for row in queue_rows:
             key = (row["video_id"], row["clip_index"])
@@ -157,7 +296,6 @@ def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
             if (analytics.get("views") or 0) >= (prev.get("views") or 0):
                 best_analytics[key] = analytics
 
-        # Compute channel average views for tier assignment
         all_views = [a.get("views") or 0 for a in best_analytics.values() if a.get("views")]
         avg_views = sum(all_views) / len(all_views) if all_views else 0
 
@@ -170,10 +308,10 @@ def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
             views = a.get("views") or 0
             tier = "top" if views >= avg_views * 1.5 else ("low" if views < avg_views * 0.5 else "mid")
             sb.table("clip_selection_log").update({
-                "views":               views,
-                "likes":               a.get("likes") or 0,
-                "engagement_rate":     round(a.get("engagementRate") or 0, 2),
-                "performance_tier":    tier,
+                "views":                views,
+                "likes":                a.get("likes") or 0,
+                "engagement_rate":      round(a.get("engagementRate") or 0, 2),
+                "performance_tier":     tier,
                 "analytics_updated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", rec["id"]).execute()
             updated += 1
@@ -185,13 +323,10 @@ def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
 
 def build_decision_history(zernio_map: dict[str, dict]) -> str:
     """
-    Build a summary of Claude's past clip selection decisions and their outcomes,
-    broken down both cross-platform and per-platform, for injection into the
-    intelligence brief.
+    Build a summary of past clip selection decisions and their outcomes,
+    broken down cross-platform and per-platform, for injection into the brief.
     """
     try:
-        from collections import defaultdict
-
         rows = (
             sb.table("clip_selection_log")
             .select("video_id, clip_index, hook_type, topic_category, duration_seconds, views, performance_tier")
@@ -202,7 +337,6 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
         if len(rows) < 10:
             return ""
 
-        # Pull per-platform analytics for these clips from clip_queue
         queue_rows = (
             sb.table("clip_queue")
             .select("video_id, clip_index, platform, zernio_post_id")
@@ -211,7 +345,6 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
             .execute()
         ).data or []
 
-        # Build lookup: (video_id, clip_index) → [{platform, views, engagement_rate}]
         queue_by_clip: dict[tuple, list] = defaultdict(list)
         for qrow in queue_rows:
             key = (qrow["video_id"], qrow["clip_index"])
@@ -224,12 +357,9 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
                     "engagement_rate": round(analytics.get("engagementRate") or 0, 2),
                 })
 
-        # Cross-platform aggregates
         hook_stats:  dict[str, list] = defaultdict(list)
         topic_stats: dict[str, list] = defaultdict(list)
         tier_counts: dict[str, int]  = defaultdict(int)
-
-        # Per-platform aggregates: platform → hook_type/topic → [views]
         platform_hook:  dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
         platform_topic: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
 
@@ -239,17 +369,12 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
                 topic_stats[r["topic_category"] or "unknown"].append(r["views"])
             tier_counts[r["performance_tier"] or "unknown"] += 1
 
-            # Per-platform breakdown using live analytics
             key = (r["video_id"], r["clip_index"])
             for pdata in queue_by_clip.get(key, []):
-                platform  = pdata["platform"]
-                hook_type = r["hook_type"] or "unknown"
-                topic     = r["topic_category"] or "unknown"
-                views     = pdata["views"]
-                platform_hook[platform][hook_type].append(views)
-                platform_topic[platform][topic].append(views)
+                platform_hook[pdata["platform"]][r["hook_type"] or "unknown"].append(pdata["views"])
+                platform_topic[pdata["platform"]][r["topic_category"] or "unknown"].append(pdata["views"])
 
-        lines = [f"CLAUDE'S PAST CLIP SELECTION OUTCOMES ({len(rows)} clips with data):"]
+        lines = [f"PAST CLIP SELECTION OUTCOMES ({len(rows)} clips with data):"]
 
         lines.append("\nBy hook type (avg views, cross-platform):")
         for ht, vl in sorted(hook_stats.items(), key=lambda x: -sum(x[1]) / len(x[1])):
@@ -260,7 +385,7 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
             lines.append(f"  {tc}: {round(sum(vl)/len(vl))} avg views ({len(vl)} clips)")
 
         if platform_hook:
-            lines.append("\nPER-PLATFORM HOOK PERFORMANCE (what works on each platform):")
+            lines.append("\nPER-PLATFORM HOOK PERFORMANCE:")
             for platform in ["tiktok", "instagram", "youtube", "facebook"]:
                 if platform not in platform_hook:
                     continue
@@ -291,26 +416,44 @@ def build_decision_history(zernio_map: dict[str, dict]) -> str:
         return ""
 
 
-# ── Analysis ──────────────────────────────────────────────────────────────────
+# ── Analysis ───────────────────────────────────────────────────────────────────
 
 def build_performance_dataset(clips: list[dict], zernio_map: dict[str, dict]) -> list[dict]:
-    """Merge clip metadata with live analytics."""
+    """
+    Merge clip metadata with live analytics.
+    Includes timing, caption length, and engagement breakdown per post.
+    """
     rows = []
     for clip in clips:
         zpost = zernio_map.get(clip["zernio_post_id"])
         if not zpost:
             continue
-        analytics = zpost.get("analytics") or {}
-        views       = analytics.get("views") or 0
-        likes       = analytics.get("likes") or 0
-        comments    = analytics.get("comments") or 0
-        shares      = analytics.get("shares") or 0
-        eng_rate    = analytics.get("engagementRate") or 0
-        last_updated = analytics.get("lastUpdated")
+        analytics     = zpost.get("analytics") or {}
+        views         = analytics.get("views") or 0
+        likes         = analytics.get("likes") or 0
+        comments      = analytics.get("comments") or 0
+        shares        = analytics.get("shares") or 0
+        eng_rate      = analytics.get("engagementRate") or 0
+        last_updated  = analytics.get("lastUpdated")
 
-        # Only include posts that have actually synced analytics
         if not last_updated or views == 0:
             continue
+
+        # Parse timing from posted_at
+        posted_at = clip.get("posted_at") or ""
+        day_of_week = ""
+        hour_utc    = None
+        try:
+            dt = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+            day_of_week = dt.strftime("%A")
+            hour_utc    = dt.hour
+        except Exception:
+            pass
+
+        # Caption length for this platform
+        captions = clip.get("captions") or {}
+        platform_caption = captions.get(clip["platform"]) or ""
+        caption_length = len(platform_caption.strip())
 
         rows.append({
             "platform":         clip["platform"],
@@ -321,23 +464,107 @@ def build_performance_dataset(clips: list[dict], zernio_map: dict[str, dict]) ->
             "comments":         comments,
             "shares":           shares,
             "engagement_rate":  round(eng_rate, 2),
-            "posted_at":        clip.get("posted_at", "")[:10],
+            "posted_at":        posted_at[:10],
+            "day_of_week":      day_of_week,
+            "hour_utc":         hour_utc,
+            "caption_length":   caption_length,
         })
 
     return sorted(rows, key=lambda r: r["views"], reverse=True)
 
 
-def analyse_with_claude(rows: list[dict], decision_history: str) -> str:
-    """
-    Send performance data to Claude and ask it to extract actionable
-    patterns for future clip selection.
-    """
+def build_timing_analysis(rows: list[dict]) -> str:
+    """Analyse which days of the week and posting times drive the most views."""
+    if not rows:
+        return ""
+
+    day_views:  dict[str, list] = defaultdict(list)
+    hour_views: dict[int, list]  = defaultdict(list)
+    platform_hour: dict[str, dict[int, list]] = defaultdict(lambda: defaultdict(list))
+
+    for r in rows:
+        if r.get("day_of_week"):
+            day_views[r["day_of_week"]].append(r["views"])
+        if r.get("hour_utc") is not None:
+            hour_views[r["hour_utc"]].append(r["views"])
+            platform_hour[r["platform"]][r["hour_utc"]].append(r["views"])
+
+    if not day_views:
+        return ""
+
+    lines = ["TIMING PERFORMANCE:"]
+
+    days_ranked = sorted(day_views.items(), key=lambda x: -sum(x[1]) / len(x[1]))
+    lines.append("\nBest days to post (avg views):")
+    for day, vl in days_ranked:
+        lines.append(f"  {day}: {round(sum(vl)/len(vl))} avg views ({len(vl)} posts)")
+
+    if hour_views:
+        lines.append("\nBest posting times UTC (top 4):")
+        hours_ranked = sorted(hour_views.items(), key=lambda x: -sum(x[1]) / len(x[1]))[:4]
+        for h, vl in hours_ranked:
+            lines.append(f"  {h:02d}:00 UTC: {round(sum(vl)/len(vl))} avg views ({len(vl)} posts)")
+
+    for platform in ["tiktok", "instagram", "youtube", "facebook"]:
+        if platform not in platform_hour:
+            continue
+        ph = platform_hour[platform]
+        if not ph:
+            continue
+        best_hour = max(ph.items(), key=lambda x: sum(x[1]) / len(x[1]))
+        avg = round(sum(best_hour[1]) / len(best_hour[1]))
+        lines.append(f"  {platform.upper()} best hour: {best_hour[0]:02d}:00 UTC ({avg} avg views)")
+
+    return "\n".join(lines)
+
+
+def build_caption_analysis(rows: list[dict]) -> str:
+    """Analyse caption length vs engagement per platform."""
+    if not rows:
+        return ""
+
+    SHORT  = 80   # chars
+    MEDIUM = 220
+
+    platform_buckets: dict[str, dict[str, list]] = defaultdict(lambda: {"short": [], "medium": [], "long": []})
+
+    for r in rows:
+        length = r.get("caption_length") or 0
+        if length == 0:
+            continue
+        bucket = "short" if length < SHORT else ("medium" if length < MEDIUM else "long")
+        platform_buckets[r["platform"]][bucket].append(r["views"])
+
+    lines = ["CAPTION LENGTH VS VIEWS (per platform):"]
+    for platform in ["tiktok", "instagram", "youtube", "facebook"]:
+        if platform not in platform_buckets:
+            continue
+        pb = platform_buckets[platform]
+        line_parts = []
+        for bucket in ["short", "medium", "long"]:
+            vl = pb[bucket]
+            if vl:
+                label = f"short (<{SHORT}c)" if bucket == "short" else (f"medium ({SHORT}-{MEDIUM}c)" if bucket == "medium" else f"long (>{MEDIUM}c)")
+                line_parts.append(f"{label}: {round(sum(vl)/len(vl))} avg views ({len(vl)} posts)")
+        if line_parts:
+            lines.append(f"\n  {platform.upper()}: " + " | ".join(line_parts))
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def analyse_with_claude(
+    rows: list[dict],
+    decision_history: str,
+    algorithm_research: str,
+    timing_text: str,
+    caption_text: str,
+    follower_data: dict[str, int],
+) -> str:
+    """Send all performance data to Claude for strategic analysis."""
     if not rows:
         return "No synced performance data available yet."
 
-    from collections import defaultdict
-
-    # Group by platform and sort each by views
+    # Group by platform, sorted by views
     by_platform: dict[str, list] = defaultdict(list)
     for r in rows:
         by_platform[r["platform"]].append(r)
@@ -351,7 +578,8 @@ def analyse_with_claude(rows: list[dict], decision_history: str) -> str:
     for i, r in enumerate(top, 1):
         dataset_text += (
             f"{i}. [{r['platform'].upper()}] {r['views']} views | "
-            f"{r['engagement_rate']}% eng | {r['duration_seconds']}s | "
+            f"{r['engagement_rate']}% eng | {r['comments']} comments | "
+            f"{r['shares']} shares | {r['duration_seconds']}s | "
             f"Hook: \"{r['hook']}\"\n"
         )
 
@@ -364,7 +592,7 @@ def analyse_with_claude(rows: list[dict], decision_history: str) -> str:
                 f"Hook: \"{r['hook']}\"\n"
             )
 
-    dataset_text += "\nTOP 5 CLIPS PER PLATFORM:\n"
+    dataset_text += "\nTOP 5 PER PLATFORM:\n"
     for platform in ["tiktok", "instagram", "youtube", "facebook"]:
         if platform not in by_platform:
             continue
@@ -372,6 +600,7 @@ def analyse_with_claude(rows: list[dict], decision_history: str) -> str:
         for i, r in enumerate(by_platform[platform][:5], 1):
             dataset_text += (
                 f"  {i}. {r['views']} views | {r['engagement_rate']}% eng | "
+                f"{r['comments']} comments | {r['shares']} shares | "
                 f"{r['duration_seconds']}s | Hook: \"{r['hook']}\"\n"
             )
 
@@ -379,53 +608,82 @@ def analyse_with_claude(rows: list[dict], decision_history: str) -> str:
     for r in rows:
         p = r["platform"]
         if p not in platform_summary:
-            platform_summary[p] = {"views": [], "engagement": []}
+            platform_summary[p] = {"views": [], "engagement": [], "comments": [], "shares": []}
         platform_summary[p]["views"].append(r["views"])
         platform_summary[p]["engagement"].append(r["engagement_rate"])
+        platform_summary[p]["comments"].append(r["comments"])
+        platform_summary[p]["shares"].append(r["shares"])
 
     platform_text = "\nPLATFORM AVERAGES:\n"
     for p, d in platform_summary.items():
         avg_v = round(sum(d["views"]) / len(d["views"]))
         avg_e = round(sum(d["engagement"]) / len(d["engagement"]), 2)
-        platform_text += f"  {p.upper()}: avg {avg_v} views, {avg_e}% engagement ({len(d['views'])} clips)\n"
+        avg_c = round(sum(d["comments"]) / len(d["comments"]), 1)
+        avg_s = round(sum(d["shares"]) / len(d["shares"]), 1)
+        platform_text += (
+            f"  {p.upper()}: avg {avg_v} views, {avg_e}% eng, "
+            f"{avg_c} comments, {avg_s} shares ({len(d['views'])} clips)\n"
+        )
 
-    decision_block = f"\n{decision_history}\n" if decision_history else ""
+    follower_text = ""
+    if follower_data:
+        follower_text = "\nCURRENT FOLLOWER COUNTS:\n"
+        for platform, count in follower_data.items():
+            follower_text += f"  {platform.upper()}: {count:,} followers\n"
 
-    prompt = f"""You are a social media performance analyst for the Konnected Minds Podcast (Ghana-based business/entrepreneurship content).
+    decision_block   = f"\n{decision_history}\n"   if decision_history   else ""
+    timing_block     = f"\n{timing_text}\n"         if timing_text        else ""
+    caption_block    = f"\n{caption_text}\n"        if caption_text       else ""
+    algorithm_block  = f"\nPLATFORM ALGORITHM RESEARCH (current state):\n{algorithm_research}\n" if algorithm_research else ""
 
-Below is real performance data from clips already posted across Instagram, TikTok, YouTube Shorts, and Facebook Reels.
+    prompt = f"""You are an expert social media strategist and content agent for the Konnected Minds Podcast (Ghana-based business/entrepreneurship channel posting short-form clips to TikTok, Instagram Reels, YouTube Shorts, and Facebook Reels).
+
+Your role is not just to analyse past performance — you must act as a smart, proactive social media manager who understands what it takes to grow an audience, increase followers, and build real reach, not just post-level engagement.
+
+Below is everything you need to know:
 
 {dataset_text}
-{platform_text}{decision_block}
+{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{algorithm_block}
 
-Your task: write a concise CHANNEL INTELLIGENCE BRIEF that a clip selection AI will read before picking clips from a new episode. Focus on:
+Write a CHANNEL INTELLIGENCE BRIEF that the clip selection AI will read before picking and captioning clips from a new episode. This brief must make the AI smarter — not just reactive to past data, but genuinely strategic about growth.
 
-1. HOOK PATTERNS — What types of opening lines drive the most views? Quote specific examples from the top performers.
-2. TOPIC PATTERNS — Which subject areas (money, business failure, personal story, relationships, hustle mindset, etc.) consistently perform well vs. poorly?
-3. DURATION SWEET SPOT — What clip length works best for this channel based on the data?
-4. PLATFORM-SPECIFIC STRATEGY — Based on the per-platform data, write a concrete strategy for each platform: what hook styles, tones, and topics win on TikTok vs Instagram vs YouTube vs Facebook for THIS specific channel. Include caption tone guidance — e.g. whether TikTok captions should be questions, confessions, or reactions; whether YouTube titles need specific or surprise elements; whether Facebook needs more context.
-5. WHAT TO AVOID — Common traits of the lowest performers. Be specific.
-6. ACTIONABLE RULES — 5 to 8 specific, concrete rules the clip selector should follow when choosing clips AND writing captions (e.g. "On TikTok, prioritise confession hooks — they average 2x the views of advice hooks on this channel", "YouTube titles must contain a number or a direct question", "Avoid clips that start with generic advice on any platform").
+Structure your brief around these sections:
 
-Be specific and data-driven. Reference actual hook examples from the data. This brief will be injected directly into Claude's prompt so write it as clear, directive guidance — not a report."""
+1. HOOK PATTERNS — What opening lines drive the most views on this channel? Quote specific hook examples from the top performers. Rank hook types.
 
-    # Haiku is used here intentionally — this is structured analytical work
-    # (pattern extraction from a data table), not creative generation.
-    # Sonnet is reserved for clip selection where output quality is critical.
+2. TOPIC PATTERNS — Which subject areas consistently outperform? Which consistently underperform? Be specific about Ghana/Africa-relevant topics vs generic ones.
+
+3. DURATION SWEET SPOT — What length actually works best for this channel based on the data? Does it vary by platform?
+
+4. PLATFORM STRATEGY — For each platform (TikTok, Instagram, YouTube, Facebook), write a specific strategy combining: what this channel's data shows works, what the current algorithm rewards, and what caption tone/style/length to use. Make it specific to THIS channel and THIS audience.
+
+5. GROWTH TACTICS — Beyond just getting views on individual clips, what should the AI prioritise to grow followers and build a real audience? What types of content create saves, shares, and return viewers? How should the channel approach each platform differently for audience building?
+
+6. POSTING TIMING — Based on the timing data, when should content be posted for maximum reach?
+
+7. WHAT TO AVOID — Specific traits of the lowest performers. What types of hooks, topics, and caption styles are actively hurting performance?
+
+8. ACTIONABLE RULES — 8 to 10 specific, concrete rules for clip selection AND caption writing. Each rule must be direct and immediately applicable (e.g. "On TikTok, always prioritise confession hooks — they average 2x the channel's TikTok mean. Never use advice hooks as openers on TikTok.").
+
+Be specific, data-driven, and opinionated. Reference real numbers and real hook examples from the data. Write as if you are briefing a junior social media manager — clear, direct, no fluff."""
+
     msg = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1400,
+        model="claude-sonnet-4-6",
+        max_tokens=2200,
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    print("Fetching Zernio analytics...")
+    print("Fetching analytics...")
     zernio_map = fetch_zernio_all_posts()
-    print(f"  {len(zernio_map)} posts fetched from Zernio.")
+    print(f"  {len(zernio_map)} posts fetched.")
+
+    print("Fetching follower counts...")
+    follower_data = fetch_follower_counts()
 
     print("Fetching clip metadata from Supabase...")
     clips = fetch_clip_metadata()
@@ -439,7 +697,7 @@ def main():
     print(f"  {len(rows)} clips with synced analytics.")
 
     if len(rows) < 5:
-        print("  Not enough synced data yet — skipping Claude analysis.")
+        print("  Not enough synced data yet — skipping analysis.")
         return
 
     # Skip if brief is recent and dataset hasn't grown significantly
@@ -452,28 +710,38 @@ def main():
                 age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))).days
                 new_clips = len(rows) - prev_count
                 if age_days < 3 and new_clips < 10:
-                    print(f"  Brief is {age_days}d old with only {new_clips} new clips — skipping to save credits.")
+                    print(f"  Brief is {age_days}d old with only {new_clips} new clips — skipping.")
                     return
-                print(f"  Brief is {age_days}d old, {new_clips} new clips since last run — regenerating.")
+                print(f"  Brief is {age_days}d old, {new_clips} new clips — regenerating.")
     except Exception:
         pass
 
-    # Compute quick stats to save alongside the summary
-    stats = {
-        "clips_analysed": len(rows),
-        "total_views": sum(r["views"] for r in rows),
-        "avg_engagement": round(sum(r["engagement_rate"] for r in rows) / len(rows), 2),
-        "best_hook": rows[0]["hook"] if rows else "",
-        "best_views": rows[0]["views"] if rows else 0,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    # Gather all intelligence inputs
+    print("Researching platform algorithms...")
+    algorithm_research = research_platform_algorithms()
 
-    print("Building per-platform decision history...")
+    print("Building decision history...")
     decision_history = build_decision_history(zernio_map)
 
-    print("Sending to Claude for pattern analysis...")
-    summary = analyse_with_claude(rows, decision_history)
-    print("  Claude analysis complete.")
+    print("Building timing analysis...")
+    timing_text = build_timing_analysis(rows)
+
+    print("Building caption analysis...")
+    caption_text = build_caption_analysis(rows)
+
+    stats = {
+        "clips_analysed":  len(rows),
+        "total_views":     sum(r["views"] for r in rows),
+        "avg_engagement":  round(sum(r["engagement_rate"] for r in rows) / len(rows), 2),
+        "best_hook":       rows[0]["hook"] if rows else "",
+        "best_views":      rows[0]["views"] if rows else 0,
+        "follower_counts": follower_data,
+        "generated_at":    datetime.now(timezone.utc).isoformat(),
+    }
+
+    print("Sending to Claude for strategic analysis...")
+    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data)
+    print("  Analysis complete.")
     print("\n--- INTELLIGENCE BRIEF PREVIEW ---")
     print(summary[:600] + ("..." if len(summary) > 600 else ""))
     print("---\n")
