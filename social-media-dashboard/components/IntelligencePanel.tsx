@@ -27,68 +27,85 @@ function timeAgo(dateStr: string) {
   return `${d}d ago`
 }
 
-function cleanText(text: string): string {
+function stripMd(text: string): string {
   return text
-    .replace(/—/g, ",")
-    .replace(/\s*--\s*/g, ", ")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")   // **bold** → plain
+    .replace(/\*([^*]+)\*/g, "$1")        // *italic* → plain
+    .replace(/`([^`]+)`/g, "$1")          // `code` → plain
+    .replace(/—/g, ",")              // em dash
+    .replace(/\s*--\s*/g, ", ")           // double hyphen
     .replace(/\bClaude\b/gi, "the AI")
     .replace(/\bZernio\b/gi, "the platform")
+    .replace(/,\s*-\s*$/, "")             // trailing ", -" artifact
+    .replace(/[,\s]+$/, "")              // trailing commas / whitespace
     .replace(/[ \t]{2,}/g, " ")
     .trim()
 }
 
 type Block =
-  | { kind: "header"; text: string }
-  | { kind: "body";   text: string }
-  | { kind: "bullet"; text: string; numbered?: boolean }
-
-function isHeaderLine(line: string): boolean {
-  const stripped = line.replace(/^\*\*/, "").replace(/\*\*$/, "").trim()
-  // "1. HOOK PATTERNS" — digit dot then all-caps words
-  if (/^\d+\.\s+/.test(stripped)) {
-    const after = stripped.replace(/^\d+\.\s+/, "")
-    if (/^[A-Z][A-Z\s\-&:\/()]+$/.test(after)) return true
-  }
-  // Pure all-caps line, no lowercase
-  if (/^[A-Z][A-Z\s\-&:\/()]{2,}$/.test(stripped) && stripped.length < 65) return true
-  return false
-}
+  | { kind: "header";    text: string }
+  | { kind: "subheader"; text: string }
+  | { kind: "body";      text: string }
+  | { kind: "bullet";    text: string }
 
 function parseBlocks(raw: string): Block[] {
-  const lines = raw.split("\n")
   const blocks: Block[] = []
 
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
+  for (const line of raw.split("\n")) {
+    const t = line.trim()
+    if (!t) continue
 
-    if (isHeaderLine(trimmed)) {
-      const text = trimmed
-        .replace(/^\*\*/, "").replace(/\*\*$/, "")
-        .replace(/^\d+\.\s+/, "")
-        .replace(/[:\s]+$/, "")
-        .trim()
-      blocks.push({ kind: "header", text })
+    // Markdown section header: ## or # prefix
+    if (/^#{1,3}\s+/.test(t)) {
+      const text = stripMd(t.replace(/^#{1,3}\s+/, "").replace(/^\d+\.\s+/, ""))
+      // Drop the meta title line like "KONNECTED MINDS PODCAST · CHANNEL INTELLIGENCE BRIEF"
+      if (/intelligence brief/i.test(text) || /podcast/i.test(text)) continue
+      if (text) blocks.push({ kind: "header", text: text.replace(/[:\s]+$/, "") })
       continue
     }
 
-    // Bullet: starts with - • * or a number followed by ) or . then lowercase/mixed
-    if (/^[-•*]\s+/.test(trimmed)) {
-      blocks.push({ kind: "bullet", text: trimmed.replace(/^[-•*]\s+/, "") })
-      continue
-    }
-    if (/^\d+[.)]\s+[a-zA-Z]/.test(trimmed)) {
-      const text = trimmed.replace(/^\d+[.)]\s+/, "")
-      blocks.push({ kind: "bullet", text, numbered: true })
+    // Numbered ALL-CAPS section header without ##: "1. HOOK PATTERNS"
+    if (/^\d+\.\s+[A-Z][A-Z\s\-&:\/()]+$/.test(t)) {
+      const text = stripMd(t.replace(/^\d+\.\s+/, "").replace(/[:\s]+$/, ""))
+      if (text) blocks.push({ kind: "header", text })
       continue
     }
 
-    // Body — merge consecutive lines into the same paragraph
+    // Pure ALL-CAPS line (no lowercase): "HOOK PATTERNS"
+    if (/^[A-Z][A-Z\s\-&:\/()]{2,}$/.test(t) && t.length < 65) {
+      blocks.push({ kind: "header", text: stripMd(t).replace(/[:\s]+$/, "") })
+      continue
+    }
+
+    // Standalone bold line = sub-header: **Avoid:** or **High-performing hooks:**
+    if (/^\*\*[^*]+\*\*[:\s]*$/.test(t)) {
+      const text = stripMd(t).replace(/[:\s]+$/, "")
+      if (text) blocks.push({ kind: "subheader", text })
+      continue
+    }
+
+    // Bullet: · - • *
+    if (/^[·\-•*]\s+/.test(t)) {
+      const text = stripMd(t.replace(/^[·\-•*]\s+/, ""))
+      if (text) blocks.push({ kind: "bullet", text })
+      continue
+    }
+
+    // Numbered bullet: "1. Always..." (lowercase/mixed after number = not a header)
+    if (/^\d+[.)]\s+[a-zA-Z]/.test(t)) {
+      const text = stripMd(t.replace(/^\d+[.)]\s+/, ""))
+      if (text) blocks.push({ kind: "bullet", text })
+      continue
+    }
+
+    // Body — merge consecutive lines into one paragraph
+    const text = stripMd(t)
+    if (!text) continue
     const prev = blocks[blocks.length - 1]
     if (prev?.kind === "body") {
-      prev.text += " " + trimmed
+      prev.text += " " + text
     } else {
-      blocks.push({ kind: "body", text: trimmed })
+      blocks.push({ kind: "body", text })
     }
   }
 
@@ -100,7 +117,7 @@ export default function IntelligencePanel({ data }: { data: IntelligenceData | n
 
   if (!data || !data.summary) return null
 
-  const blocks = parseBlocks(cleanText(data.summary))
+  const blocks = parseBlocks(data.summary)
 
   return (
     <section style={{ marginBottom: "4rem" }}>
@@ -152,7 +169,7 @@ export default function IntelligencePanel({ data }: { data: IntelligenceData | n
                 Best hook so far · {fmt(data.bestViews)} views
               </p>
               <p style={{ fontSize: "13px", color: "var(--muted)", fontStyle: "italic", lineHeight: 1.65, margin: 0 }}>
-                "{cleanText(data.bestHook)}"
+                "{stripMd(data.bestHook)}"
               </p>
             </div>
           )}
@@ -168,7 +185,21 @@ export default function IntelligencePanel({ data }: { data: IntelligenceData | n
                     letterSpacing: "0.12em",
                     textTransform: "uppercase",
                     color: "var(--text)",
-                    margin: i === 0 ? "0 0 0.6rem" : "1.75rem 0 0.6rem",
+                    margin: i === 0 ? "0 0 0.75rem" : "2rem 0 0.75rem",
+                  }}>
+                    {block.text}
+                  </p>
+                )
+              }
+
+              if (block.kind === "subheader") {
+                return (
+                  <p key={i} style={{
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    color: "var(--muted)",
+                    margin: "1.25rem 0 0.5rem",
+                    letterSpacing: "0.02em",
                   }}>
                     {block.text}
                   </p>
@@ -178,7 +209,7 @@ export default function IntelligencePanel({ data }: { data: IntelligenceData | n
               if (block.kind === "bullet") {
                 return (
                   <div key={i} style={{ display: "flex", gap: "0.75rem", marginBottom: "0.5rem", alignItems: "flex-start" }}>
-                    <span style={{ color: "var(--faint)", fontSize: "12px", lineHeight: "1.75", flexShrink: 0, marginTop: "1px" }}>·</span>
+                    <span style={{ color: "var(--faint)", fontSize: "12px", lineHeight: "1.75", flexShrink: 0 }}>·</span>
                     <p style={{ fontSize: "13px", color: "var(--muted)", lineHeight: 1.75, margin: 0 }}>
                       {block.text}
                     </p>
@@ -187,7 +218,7 @@ export default function IntelligencePanel({ data }: { data: IntelligenceData | n
               }
 
               return (
-                <p key={i} style={{ fontSize: "13px", color: "var(--muted)", lineHeight: 1.75, margin: "0 0 0.75rem" }}>
+                <p key={i} style={{ fontSize: "13px", color: "var(--muted)", lineHeight: 1.75, margin: "0 0 0.5rem" }}>
                   {block.text}
                 </p>
               )
