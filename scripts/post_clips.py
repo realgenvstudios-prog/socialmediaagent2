@@ -174,18 +174,55 @@ def mark_failed(supabase_admin, clip_id):
 
 
 def cleanup_storage_if_done(supabase_admin, video_id, clip_index, storage_path):
-    """Delete clip from Supabase Storage only once every platform has posted (not just non-pending)."""
+    """No-op at post time — platforms download async. Cleanup runs via cleanup_old_clips()."""
+    pass
+
+
+def cleanup_old_clips(supabase_admin):
+    """
+    Delete video files from Supabase Storage for clips that:
+    - Are posted on ALL 4 platforms
+    - Were posted more than 48 hours ago (platforms have had time to download)
+    Keeps storage_path in DB as None so we don't retry deleted files.
+    """
+    from datetime import datetime, timezone, timedelta
+    from collections import defaultdict
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+
     result = (
         supabase_admin.table("clip_queue")
-        .select("status")
-        .eq("video_id", video_id)
-        .eq("clip_index", clip_index)
+        .select("video_id, clip_index, platform, status, storage_path, posted_at")
+        .eq("status", "posted")
+        .lt("posted_at", cutoff)
+        .not_.is_("storage_path", "null")
         .execute()
     )
-    statuses = {row["status"] for row in result.data}
-    # Keep files in storage — platforms (especially Instagram) download async
-    # and deleting immediately causes container errors. Files are ~30MB each.
-    pass
+
+    groups = defaultdict(list)
+    for row in (result.data or []):
+        groups[(row["video_id"], row["clip_index"])].append(row)
+
+    deleted = 0
+    REQUIRED = {"instagram", "tiktok", "youtube", "facebook"}
+    for (video_id, clip_index), rows in groups.items():
+        posted_platforms = {r["platform"] for r in rows}
+        if not REQUIRED.issubset(posted_platforms):
+            continue
+
+        storage_path = rows[0].get("storage_path")
+        if not storage_path:
+            continue
+
+        try:
+            supabase_admin.storage.from_("clips").remove([storage_path])
+            supabase_admin.table("clip_queue").update({"storage_path": None}).eq("video_id", video_id).eq("clip_index", clip_index).execute()
+            deleted += 1
+        except Exception as e:
+            print(f"  Storage cleanup warning ({storage_path}): {e}")
+
+    if deleted > 0:
+        print(f"  Cleaned {deleted} old clip file(s) from storage.")
 
 
 def is_paused(supabase_admin):
@@ -285,6 +322,8 @@ def main():
         .execute()
     )
     print(f"\nClips remaining in queue: {remaining.count}")
+
+    cleanup_old_clips(supabase_admin)
 
 
 if __name__ == "__main__":

@@ -638,6 +638,59 @@ def build_caption_analysis(rows: list[dict]) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+def build_growth_analysis() -> str:
+    """
+    Reads clip_performance time-series snapshots to find growth patterns.
+    Shows how views accumulate over days for different hook types and platforms.
+    Reveals which clips have slow burns vs early spikes, and which are still growing.
+    """
+    try:
+        rows = (
+            sb.table("clip_performance")
+            .select("platform, hook, hook_type, views, likes, shares, saves, hours_since_posted, measured_at")
+            .order("hours_since_posted")
+            .limit(2000)
+            .execute()
+        ).data or []
+
+        if len(rows) < 10:
+            return ""
+
+        # Group snapshots by clip identity (platform + hook truncated as proxy key)
+        # Build: for each hook_type, what are avg views at 24h, 72h, 168h (7d)?
+        by_type: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+        for r in rows:
+            ht = r.get("hook_type") or "unknown"
+            h  = r.get("hours_since_posted") or 0
+            v  = r.get("views") or 0
+            bucket = "24h" if h <= 24 else "72h" if h <= 72 else "7d" if h <= 168 else "30d"
+            by_type[ht][bucket].append(v)
+
+        lines = ["VIEW GROWTH BY HOOK TYPE (from daily time-series snapshots):"]
+        for ht, buckets in sorted(by_type.items()):
+            parts = []
+            for label in ["24h", "72h", "7d", "30d"]:
+                vals = buckets.get(label, [])
+                if vals:
+                    parts.append(f"{label}: avg {int(sum(vals)/len(vals))} views ({len(vals)} snapshots)")
+            if parts:
+                lines.append(f"  {ht}: {' | '.join(parts)}")
+
+        # Find clips still growing strongly at 7d+ (shares/saves signal longevity)
+        late_rows = [r for r in rows if (r.get("hours_since_posted") or 0) >= 144]
+        if late_rows:
+            top_late = sorted(late_rows, key=lambda r: (r.get("shares") or 0) + (r.get("saves") or 0), reverse=True)[:3]
+            if top_late:
+                lines.append("\nCLIPS STILL GROWING AT 7 DAYS (high shares+saves = long-tail potential):")
+                for r in top_late:
+                    lines.append(f"  [{r.get('platform','?')}] \"{(r.get('hook') or '')[:70]}\" — {r.get('views',0)} views, {r.get('shares',0)} shares, {r.get('saves',0)} saves at {r.get('hours_since_posted','?')}h")
+
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"  Warning: growth analysis failed: {e}")
+        return ""
+
+
 def analyse_with_claude(
     rows: list[dict],
     decision_history: str,
@@ -646,6 +699,7 @@ def analyse_with_claude(
     caption_text: str,
     follower_data: dict[str, int],
     content_analysis: str,
+    growth_analysis: str,
 ) -> str:
     """Send all performance data to Claude for strategic analysis."""
     if not rows:
@@ -723,6 +777,7 @@ def analyse_with_claude(
     caption_block   = f"\n{caption_text}\n"                                                  if caption_text      else ""
     algorithm_block = f"\nPLATFORM ALGORITHM RESEARCH (current state):\n{algorithm_research}\n" if algorithm_research else ""
     content_block   = f"\n{content_analysis}\n"                                              if content_analysis  else ""
+    growth_block    = f"\n{growth_analysis}\n"                                               if growth_analysis   else ""
 
     prompt = f"""You are an expert social media strategist and content agent for the Konnected Minds Podcast (Ghana-based business/entrepreneurship channel posting short-form clips to TikTok, Instagram Reels, YouTube Shorts, and Facebook Reels).
 
@@ -731,7 +786,7 @@ Your role is not just to analyse past performance — you must act as a smart, p
 Below is everything you need to know:
 
 {dataset_text}
-{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{content_block}{algorithm_block}
+{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{content_block}{growth_block}{algorithm_block}
 
 Write a CHANNEL INTELLIGENCE BRIEF that the clip selection AI will read before picking and captioning clips from a new episode. This brief must make the AI smarter — not just reactive to past data, but genuinely strategic about growth.
 
@@ -822,6 +877,9 @@ def main():
     print("Building clip content analysis...")
     content_analysis = build_content_analysis(zernio_map)
 
+    print("Building view growth analysis...")
+    growth_analysis = build_growth_analysis()
+
     stats = {
         "clips_analysed":  len(rows),
         "total_views":     sum(r["views"] for r in rows),
@@ -833,7 +891,7 @@ def main():
     }
 
     print("Sending to Claude for strategic analysis...")
-    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data, content_analysis)
+    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data, content_analysis, growth_analysis)
     print("  Analysis complete.")
     print("\n--- INTELLIGENCE BRIEF PREVIEW ---")
     print(summary[:600] + ("..." if len(summary) > 600 else ""))

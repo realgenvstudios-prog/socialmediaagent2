@@ -72,3 +72,57 @@ CREATE TABLE IF NOT EXISTS video_clip_plans (
     created_at   TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (video_id, clip_index)
 );
+
+-- Per-clip selection log — records every clip Claude selected and its eventual performance
+-- Used by update_intelligence.py to learn which hook types, topics, and durations perform best
+CREATE TABLE IF NOT EXISTS clip_selection_log (
+    id                  UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+    video_id            TEXT        NOT NULL,
+    clip_index          INTEGER     NOT NULL,
+    hook                TEXT,
+    hook_type           TEXT,
+    topic_category      TEXT,
+    duration_seconds    FLOAT,
+    views               INTEGER     DEFAULT 0,
+    likes               INTEGER     DEFAULT 0,
+    engagement_rate     FLOAT       DEFAULT 0,
+    performance_tier    TEXT,
+    clip_transcript     TEXT,
+    analytics_updated_at TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (video_id, clip_index)
+);
+
+-- Daily time-series snapshots of clip engagement (one row per clip per day)
+-- Tracks how views, shares, saves grow over time — reveals long-tail vs flash-in-pan clips
+CREATE TABLE IF NOT EXISTS clip_performance (
+    id                  UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+    clip_queue_id       UUID        NOT NULL,
+    video_id            TEXT        NOT NULL,
+    clip_index          INTEGER     NOT NULL,
+    zernio_post_id      TEXT,
+    platform            TEXT        NOT NULL,
+    hours_since_posted  INTEGER,
+    views               INTEGER     DEFAULT 0,
+    impressions         INTEGER     DEFAULT 0,
+    reach               INTEGER     DEFAULT 0,
+    likes               INTEGER     DEFAULT 0,
+    comments            INTEGER     DEFAULT 0,
+    shares              INTEGER     DEFAULT 0,
+    saves               INTEGER     DEFAULT 0,
+    clicks              INTEGER     DEFAULT 0,
+    engagement_rate     FLOAT       DEFAULT 0,
+    measured_at         TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_clip_performance_clip
+    ON clip_performance(clip_queue_id, measured_at);
+
+-- Channel intelligence brief — single row updated daily by update_intelligence.py
+-- Injected into every Claude clip selection prompt via process_video.py
+CREATE TABLE IF NOT EXISTS channel_intelligence (
+    id         TEXT        PRIMARY KEY DEFAULT 'singleton',
+    summary    TEXT,
+    stats      JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
