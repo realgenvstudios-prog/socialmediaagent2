@@ -183,15 +183,18 @@ def update_selection_outcomes(zernio_map: dict[str, dict]) -> None:
         print(f"  Could not update selection outcomes: {e}")
 
 
-def build_decision_history() -> str:
+def build_decision_history(zernio_map: dict[str, dict]) -> str:
     """
-    Build a summary of Claude's past clip selection decisions and their outcomes
-    for injection into the intelligence brief.
+    Build a summary of Claude's past clip selection decisions and their outcomes,
+    broken down both cross-platform and per-platform, for injection into the
+    intelligence brief.
     """
     try:
+        from collections import defaultdict
+
         rows = (
             sb.table("clip_selection_log")
-            .select("hook_type, topic_category, duration_seconds, views, performance_tier")
+            .select("video_id, clip_index, hook_type, topic_category, duration_seconds, views, performance_tier")
             .not_.is_("performance_tier", "null")
             .execute()
         ).data or []
@@ -199,11 +202,36 @@ def build_decision_history() -> str:
         if len(rows) < 10:
             return ""
 
-        # Aggregate by hook_type
-        from collections import defaultdict
-        hook_stats: dict[str, list] = defaultdict(list)
+        # Pull per-platform analytics for these clips from clip_queue
+        queue_rows = (
+            sb.table("clip_queue")
+            .select("video_id, clip_index, platform, zernio_post_id")
+            .eq("status", "posted")
+            .not_.is_("zernio_post_id", "null")
+            .execute()
+        ).data or []
+
+        # Build lookup: (video_id, clip_index) → [{platform, views, engagement_rate}]
+        queue_by_clip: dict[tuple, list] = defaultdict(list)
+        for qrow in queue_rows:
+            key = (qrow["video_id"], qrow["clip_index"])
+            zpost = zernio_map.get(qrow.get("zernio_post_id") or "")
+            analytics = (zpost or {}).get("analytics") or {}
+            if analytics.get("views"):
+                queue_by_clip[key].append({
+                    "platform":        qrow["platform"],
+                    "views":           analytics.get("views") or 0,
+                    "engagement_rate": round(analytics.get("engagementRate") or 0, 2),
+                })
+
+        # Cross-platform aggregates
+        hook_stats:  dict[str, list] = defaultdict(list)
         topic_stats: dict[str, list] = defaultdict(list)
-        tier_counts: dict[str, int] = defaultdict(int)
+        tier_counts: dict[str, int]  = defaultdict(int)
+
+        # Per-platform aggregates: platform → hook_type/topic → [views]
+        platform_hook:  dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+        platform_topic: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
 
         for r in rows:
             if r.get("views") is not None:
@@ -211,24 +239,55 @@ def build_decision_history() -> str:
                 topic_stats[r["topic_category"] or "unknown"].append(r["views"])
             tier_counts[r["performance_tier"] or "unknown"] += 1
 
+            # Per-platform breakdown using live analytics
+            key = (r["video_id"], r["clip_index"])
+            for pdata in queue_by_clip.get(key, []):
+                platform  = pdata["platform"]
+                hook_type = r["hook_type"] or "unknown"
+                topic     = r["topic_category"] or "unknown"
+                views     = pdata["views"]
+                platform_hook[platform][hook_type].append(views)
+                platform_topic[platform][topic].append(views)
+
         lines = [f"CLAUDE'S PAST CLIP SELECTION OUTCOMES ({len(rows)} clips with data):"]
 
-        lines.append("\nBy hook type (avg views):")
-        for ht, views_list in sorted(hook_stats.items(), key=lambda x: -sum(x[1])/len(x[1])):
-            avg = round(sum(views_list) / len(views_list))
-            lines.append(f"  {ht}: {avg} avg views ({len(views_list)} clips)")
+        lines.append("\nBy hook type (avg views, cross-platform):")
+        for ht, vl in sorted(hook_stats.items(), key=lambda x: -sum(x[1]) / len(x[1])):
+            lines.append(f"  {ht}: {round(sum(vl)/len(vl))} avg views ({len(vl)} clips)")
 
-        lines.append("\nBy topic (avg views):")
-        for tc, views_list in sorted(topic_stats.items(), key=lambda x: -sum(x[1])/len(x[1])):
-            avg = round(sum(views_list) / len(views_list))
-            lines.append(f"  {tc}: {avg} avg views ({len(views_list)} clips)")
+        lines.append("\nBy topic (avg views, cross-platform):")
+        for tc, vl in sorted(topic_stats.items(), key=lambda x: -sum(x[1]) / len(x[1])):
+            lines.append(f"  {tc}: {round(sum(vl)/len(vl))} avg views ({len(vl)} clips)")
+
+        if platform_hook:
+            lines.append("\nPER-PLATFORM HOOK PERFORMANCE (what works on each platform):")
+            for platform in ["tiktok", "instagram", "youtube", "facebook"]:
+                if platform not in platform_hook:
+                    continue
+                lines.append(f"\n  {platform.upper()}:")
+                for ht, vl in sorted(platform_hook[platform].items(), key=lambda x: -sum(x[1]) / len(x[1]))[:5]:
+                    lines.append(f"    {ht}: {round(sum(vl)/len(vl))} avg views ({len(vl)} clips)")
+
+        if platform_topic:
+            lines.append("\nPER-PLATFORM TOPIC PERFORMANCE:")
+            for platform in ["tiktok", "instagram", "youtube", "facebook"]:
+                if platform not in platform_topic:
+                    continue
+                lines.append(f"\n  {platform.upper()}:")
+                for tc, vl in sorted(platform_topic[platform].items(), key=lambda x: -sum(x[1]) / len(x[1]))[:5]:
+                    lines.append(f"    {tc}: {round(sum(vl)/len(vl))} avg views ({len(vl)} clips)")
 
         total = sum(tier_counts.values())
-        lines.append(f"\nOverall: {tier_counts.get('top', 0)} top ({round(tier_counts.get('top', 0)/total*100)}%), "
-                     f"{tier_counts.get('mid', 0)} mid, {tier_counts.get('low', 0)} low performers")
+        if total > 0:
+            lines.append(
+                f"\nOverall: {tier_counts.get('top', 0)} top "
+                f"({round(tier_counts.get('top', 0) / total * 100)}%), "
+                f"{tier_counts.get('mid', 0)} mid, {tier_counts.get('low', 0)} low performers"
+            )
 
         return "\n".join(lines)
-    except Exception:
+    except Exception as e:
+        print(f"  Warning: could not build decision history: {e}")
         return ""
 
 
@@ -268,7 +327,7 @@ def build_performance_dataset(clips: list[dict], zernio_map: dict[str, dict]) ->
     return sorted(rows, key=lambda r: r["views"], reverse=True)
 
 
-def analyse_with_claude(rows: list[dict]) -> str:
+def analyse_with_claude(rows: list[dict], decision_history: str) -> str:
     """
     Send performance data to Claude and ask it to extract actionable
     patterns for future clip selection.
@@ -276,10 +335,19 @@ def analyse_with_claude(rows: list[dict]) -> str:
     if not rows:
         return "No synced performance data available yet."
 
-    top     = rows[:20]
-    bottom  = rows[-10:] if len(rows) >= 15 else []
+    from collections import defaultdict
 
-    dataset_text = "TOP PERFORMING CLIPS:\n"
+    # Group by platform and sort each by views
+    by_platform: dict[str, list] = defaultdict(list)
+    for r in rows:
+        by_platform[r["platform"]].append(r)
+    for p in by_platform:
+        by_platform[p].sort(key=lambda x: -x["views"])
+
+    top    = rows[:20]
+    bottom = rows[-10:] if len(rows) >= 15 else []
+
+    dataset_text = "TOP PERFORMING CLIPS (ALL PLATFORMS, sorted by views):\n"
     for i, r in enumerate(top, 1):
         dataset_text += (
             f"{i}. [{r['platform'].upper()}] {r['views']} views | "
@@ -296,7 +364,18 @@ def analyse_with_claude(rows: list[dict]) -> str:
                 f"Hook: \"{r['hook']}\"\n"
             )
 
-    platform_summary = {}
+    dataset_text += "\nTOP 5 CLIPS PER PLATFORM:\n"
+    for platform in ["tiktok", "instagram", "youtube", "facebook"]:
+        if platform not in by_platform:
+            continue
+        dataset_text += f"\n{platform.upper()}:\n"
+        for i, r in enumerate(by_platform[platform][:5], 1):
+            dataset_text += (
+                f"  {i}. {r['views']} views | {r['engagement_rate']}% eng | "
+                f"{r['duration_seconds']}s | Hook: \"{r['hook']}\"\n"
+            )
+
+    platform_summary: dict[str, dict] = {}
     for r in rows:
         p = r["platform"]
         if p not in platform_summary:
@@ -310,7 +389,6 @@ def analyse_with_claude(rows: list[dict]) -> str:
         avg_e = round(sum(d["engagement"]) / len(d["engagement"]), 2)
         platform_text += f"  {p.upper()}: avg {avg_v} views, {avg_e}% engagement ({len(d['views'])} clips)\n"
 
-    decision_history = build_decision_history()
     decision_block = f"\n{decision_history}\n" if decision_history else ""
 
     prompt = f"""You are a social media performance analyst for the Konnected Minds Podcast (Ghana-based business/entrepreneurship content).
@@ -325,9 +403,9 @@ Your task: write a concise CHANNEL INTELLIGENCE BRIEF that a clip selection AI w
 1. HOOK PATTERNS — What types of opening lines drive the most views? Quote specific examples from the top performers.
 2. TOPIC PATTERNS — Which subject areas (money, business failure, personal story, relationships, hustle mindset, etc.) consistently perform well vs. poorly?
 3. DURATION SWEET SPOT — What clip length works best for this channel based on the data?
-4. PLATFORM DIFFERENCES — What works on TikTok vs Instagram vs YouTube vs Facebook for THIS channel?
-5. WHAT TO AVOID — Common traits of the lowest performers.
-6. ACTIONABLE RULES — 5 to 8 specific, concrete rules the clip selector should follow (e.g. "Always prioritise clips where the guest reveals a specific number or amount", "Avoid clips that start with generic advice").
+4. PLATFORM-SPECIFIC STRATEGY — Based on the per-platform data, write a concrete strategy for each platform: what hook styles, tones, and topics win on TikTok vs Instagram vs YouTube vs Facebook for THIS specific channel. Include caption tone guidance — e.g. whether TikTok captions should be questions, confessions, or reactions; whether YouTube titles need specific or surprise elements; whether Facebook needs more context.
+5. WHAT TO AVOID — Common traits of the lowest performers. Be specific.
+6. ACTIONABLE RULES — 5 to 8 specific, concrete rules the clip selector should follow when choosing clips AND writing captions (e.g. "On TikTok, prioritise confession hooks — they average 2x the views of advice hooks on this channel", "YouTube titles must contain a number or a direct question", "Avoid clips that start with generic advice on any platform").
 
 Be specific and data-driven. Reference actual hook examples from the data. This brief will be injected directly into Claude's prompt so write it as clear, directive guidance — not a report."""
 
@@ -390,8 +468,11 @@ def main():
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    print("Building per-platform decision history...")
+    decision_history = build_decision_history(zernio_map)
+
     print("Sending to Claude for pattern analysis...")
-    summary = analyse_with_claude(rows)
+    summary = analyse_with_claude(rows, decision_history)
     print("  Claude analysis complete.")
     print("\n--- INTELLIGENCE BRIEF PREVIEW ---")
     print(summary[:600] + ("..." if len(summary) > 600 else ""))
