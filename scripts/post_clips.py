@@ -266,13 +266,17 @@ def main():
             mark_failed(supabase_admin, clip["id"])
             print(f"  FAILED (HTTP {status_code}): {response}", file=sys.stderr)
 
-    if not posted_any:
-        print("\nNo pending clips posted. Checking for failed clips to retry...")
-        for platform in ["instagram", "tiktok", "youtube", "facebook"]:
-            clip = get_failed_clips(supabase_admin, platform)
-            if clip:
-                print(f"  Retrying {platform} clip {clip['clip_index']} from {clip['video_id']}")
-                reset_to_pending(supabase_admin, clip["id"])
+    # Always check for failed clips to retry — not just when nothing posted
+    print("\nChecking for failed clips to retry...")
+    retried = 0
+    for platform in ["instagram", "tiktok", "youtube", "facebook"]:
+        clip = get_failed_clips(supabase_admin, platform)
+        if clip:
+            print(f"  Retrying {platform} clip {clip['clip_index']} from {clip['video_id']}")
+            reset_to_pending(supabase_admin, clip["id"])
+            retried += 1
+    if retried == 0:
+        print("  No failed clips to retry.")
 
     remaining = (
         supabase_admin.table("clip_queue")
