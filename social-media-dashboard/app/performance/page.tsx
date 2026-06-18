@@ -193,7 +193,14 @@ function computeDelta(
   postedAt:  string | null,
   cutoffISO: string,
 ): Metrics {
-  if (baseline) {
+  // Treat all-zero baselines as missing — they're from a broken data period
+  // where the tracker was saving 0s for everything.
+  const validBaseline = baseline && (
+    baseline.views > 0 || baseline.likes > 0 || baseline.comments > 0 ||
+    baseline.shares > 0 || baseline.saves > 0
+  )
+
+  if (validBaseline) {
     return {
       views:    Math.max(0, current.views    - baseline.views),
       likes:    Math.max(0, current.likes    - baseline.likes),
@@ -204,7 +211,7 @@ function computeDelta(
   }
   // Post was created within the period — all its stats were earned in this period
   if (postedAt && postedAt >= cutoffISO) return current
-  // Old post with no snapshot — delta unknown, show 0
+  // Old post with no valid baseline — delta unknown, show 0
   return ZERO
 }
 
