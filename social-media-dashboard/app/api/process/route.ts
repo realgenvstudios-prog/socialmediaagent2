@@ -28,6 +28,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid YouTube URL or video ID" }, { status: 400 })
   }
 
+  // YouTube video IDs are exactly 11 chars: alphanumeric, hyphen, underscore
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return NextResponse.json({ error: "Invalid video ID format" }, { status: 400 })
+  }
+
+  // Strip characters that could interfere with shell argument parsing
+  const safeTitle = title.replace(/[^\w\s',.\-:!?()&]/g, " ").trim().slice(0, 200)
+
   const res = await fetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/process_manual.yml/dispatches`,
     {
@@ -42,7 +50,7 @@ export async function POST(req: NextRequest) {
         inputs: {
           video_id:    videoId,
           video_url:   `https://www.youtube.com/watch?v=${videoId}`,
-          video_title: title || videoId,
+          video_title: safeTitle || videoId,
         },
       }),
     }

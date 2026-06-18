@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 
 export async function GET(req: NextRequest) {
+  const secret = process.env.CRON_SECRET
+  // Fail closed: if CRON_SECRET is not configured, reject all requests
+  // rather than accidentally accepting "Bearer undefined"
+  if (!secret) {
+    return NextResponse.json({ error: "Not configured" }, { status: 500 })
+  }
   const authHeader = req.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (authHeader !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 

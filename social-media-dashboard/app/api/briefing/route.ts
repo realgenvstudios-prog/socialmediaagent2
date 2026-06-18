@@ -24,15 +24,18 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const { totalPosted, weekPostCount, episodes, pending, bestThisWeek, platformTrends } = body
 
+  // Strip newlines and prompt-injection markers from any text field injected into the LLM prompt
+  const safe = (v: unknown) => String(v ?? "").replace(/[\n\r`]/g, " ").slice(0, 300)
+
   const platformLines = (platformTrends as { platform: string; trend: string; weekAvg: number }[])
     .map(p => {
       const arrow = p.trend === "up" ? "↑" : p.trend === "down" ? "↓" : "→"
-      return `${p.platform}: ${arrow}${p.weekAvg > 0 ? ` (avg ${Math.round(p.weekAvg)} views)` : ""}`
+      return `${safe(p.platform)}: ${arrow}${p.weekAvg > 0 ? ` (avg ${Math.round(Number(p.weekAvg))} views)` : ""}`
     })
     .join(", ")
 
   const bestLine = bestThisWeek
-    ? `Best clip this week: "${bestThisWeek.hook}" — ${Number(bestThisWeek.views).toLocaleString()} views on ${bestThisWeek.platform}`
+    ? `Best clip this week: "${safe(bestThisWeek.hook)}" — ${Number(bestThisWeek.views).toLocaleString()} views on ${safe(bestThisWeek.platform)}`
     : "No view data synced yet this week"
 
   const prompt = `You are the voice of KonnectedMinds Content Studio — a social media automation platform posting African entrepreneur podcast clips to TikTok, Instagram, YouTube Shorts, and Facebook Reels.
