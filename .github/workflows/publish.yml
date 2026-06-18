@@ -1,9 +1,7 @@
 name: Post Clips
 
 on:
-  schedule:
-    - cron: '0 9,13,18 * * *'  # 9am, 1pm, 6pm UTC — matches post_clips.py schedule
-  workflow_dispatch:             # manual trigger from GitHub UI
+  workflow_dispatch:  # triggered by Vercel cron via /api/cron, or manually from GitHub UI
 
 jobs:
   post:

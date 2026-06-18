@@ -64,7 +64,6 @@ jobs:
           INPUT_VIDEO_ID: ${{ github.event.inputs.video_id }}
           INPUT_VIDEO_URL: ${{ github.event.inputs.video_url }}
           INPUT_VIDEO_TITLE: ${{ github.event.inputs.video_title }}
-          YTDLP_PROXY: ${{ secrets.YTDLP_PROXY }}
           YOUTUBE_COOKIES_FILE: /tmp/yt_cookies.txt
           NO_PROXY: huggingface.co,*.huggingface.co,cdn-lfs.huggingface.co
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
