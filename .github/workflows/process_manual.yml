@@ -40,7 +40,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --fix-missing ffmpeg fonts-dejavu
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt && pip install "Pillow>=10.0.0"
+        run: |
+          pip install -r requirements.txt && pip install "Pillow>=10.0.0"
+          pip install -U "yt-dlp @ git+https://github.com/yt-dlp/yt-dlp"
 
       - name: Write YouTube cookies
         run: echo "$YOUTUBE_COOKIES" > /tmp/yt_cookies.txt
@@ -64,6 +66,7 @@ jobs:
           INPUT_VIDEO_ID: ${{ github.event.inputs.video_id }}
           INPUT_VIDEO_URL: ${{ github.event.inputs.video_url }}
           INPUT_VIDEO_TITLE: ${{ github.event.inputs.video_title }}
+          YOUTUBE_COOKIES_FILE: /tmp/yt_cookies.txt
           NO_PROXY: huggingface.co,*.huggingface.co,cdn-lfs.huggingface.co
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
