@@ -45,6 +45,8 @@ def fetch_analytics(zernio_post_id, platform):
         return resp.json()
     if resp.status_code in SYNCING_STATUS:
         return "syncing"  # not an error — platform hasn't released data yet
+    if resp.status_code == 424:
+        return "failed"  # post failed to publish on the platform — expected, not our error
     print(f"    Zernio {resp.status_code} for {platform} post {zernio_post_id}: {resp.text[:120]}")
     return None
 
@@ -52,9 +54,10 @@ def fetch_analytics(zernio_post_id, platform):
 def extract_metrics(data):
     if not data:
         return None
-    # Defensive: handle camelCase or snake_case from Zernio
+    # Zernio per-post response nests all metrics under an "analytics" key
+    analytics = data.get("analytics") or {}
     def g(key, alt=None):
-        return data.get(key) or (data.get(alt) if alt else None) or 0
+        return analytics.get(key) or (analytics.get(alt) if alt else None) or 0
     return {
         "views":           g("views"),
         "impressions":     g("impressions"),
@@ -113,9 +116,9 @@ def main():
 
         data = fetch_analytics(clip["zernio_post_id"], clip["platform"])
 
-        if data == "syncing":
+        if data in ("syncing", "failed"):
             skipped += 1
-            continue  # analytics not ready yet — not an error
+            continue  # analytics not ready yet, or post failed to publish — not our error
 
         metrics = extract_metrics(data)
 
