@@ -10,3 +10,4 @@ transcripts/
 .DS_Store
 venv/
 scripts/trigger_post.sh
+*cookies*.txt
