@@ -28,7 +28,7 @@ jobs:
       - name: Install Node.js (required by yt-dlp for n-challenge solver)
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Cache Whisper model
         uses: actions/cache@v4
@@ -40,9 +40,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --fix-missing ffmpeg fonts-dejavu
 
       - name: Install Python dependencies
-        run: |
-          pip install -r requirements.txt && pip install "Pillow>=10.0.0"
-          pip install -U "yt-dlp @ git+https://github.com/yt-dlp/yt-dlp"
+        run: pip install -r requirements.txt && pip install "Pillow>=10.0.0" && pip install "yt-dlp[default]"
 
       - name: Write YouTube cookies
         run: echo "$YOUTUBE_COOKIES" > /tmp/yt_cookies.txt

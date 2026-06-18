@@ -76,6 +76,7 @@ def download_audio_only(url, output_dir):
             "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "--no-playlist",
             "--extractor-args", "youtube:player_client=web",
+            "--js-runtimes", "node",
             *_ydl_auth_args(),
             "-o", output_path,
             url,
