@@ -311,10 +311,10 @@ export default async function PerformancePage({
     }
   })
 
-  // Top panels — fixed, ignore platform/period filter
-  const allTimeStats    = sumMetrics(allEnriched, p => p.cumulative)
-  const week7dStats     = sumMetrics(allEnriched, p => p.delta7d)
-  const weekActiveCount = allEnriched.filter(p => hasDelta(p.delta7d)).length
+  // Top panels — left is always All Time; right follows the active period filter
+  const allTimeStats       = sumMetrics(allEnriched, p => p.cumulative)
+  const allPeriodStats     = sumMetrics(allEnriched, p => p.periodDelta)
+  const periodActiveCount  = allEnriched.filter(p => hasDelta(p.periodDelta)).length
 
   const oldest = [...allEnriched]
     .filter(p => p.posted_at)
@@ -360,9 +360,9 @@ export default async function PerformancePage({
       {/* Always-visible: All Time (cumulative) + Last 7 Days (delta) */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1px", background: "var(--border)", border: "1px solid var(--border)", marginBottom: "2.5rem" }}>
         {([
-          { label: "All Time",    s: allTimeStats, sub: `${allTimeStats.count} posts total` },
-          { label: "Last 7 Days", s: week7dStats,  sub: `${weekActiveCount} posts gained engagement` },
-        ] as const).map(({ label, s, sub }) => (
+          { label: "All Time",               s: allTimeStats,   sub: `${allTimeStats.count} posts total` },
+          { label: PERIOD_LABEL[activePeriod], s: allPeriodStats, sub: `${periodActiveCount} posts gained engagement` },
+        ] as { label: string; s: typeof allTimeStats; sub: string }[]).map(({ label, s, sub }) => (
           <div key={label} style={{ background: "var(--bg)", padding: "1.5rem" }}>
             <div style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "1rem" }}>
               {label}
