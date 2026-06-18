@@ -57,13 +57,14 @@ def to_hhmmss(seconds):
 # ── Download ───────────────────────────────────────────────────────────────────
 
 def _ydl_auth_args():
+    args = []
     proxy = os.environ.get("YTDLP_PROXY")
     if proxy:
-        return ["--proxy", proxy]
+        args += ["--proxy", proxy]
     cookies = os.environ.get("YOUTUBE_COOKIES_FILE")
     if cookies and os.path.exists(cookies):
-        return ["--cookies", cookies]
-    return []
+        args += ["--cookies", cookies]
+    return args
 
 
 def download_audio_only(url, output_dir):
