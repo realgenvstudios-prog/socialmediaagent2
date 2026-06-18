@@ -11,9 +11,16 @@ type Period = (typeof PERIODS)[number]
 
 const PERIOD_LABEL: Record<Period, string> = {
   today: "Today",
-  week:  "7 days",
-  month: "30 days",
-  all:   "All time",
+  week:  "7 Days",
+  month: "30 Days",
+  all:   "All Time",
+}
+
+const PERIOD_DESC: Record<Period, string> = {
+  today: "engagement earned in the last 24h",
+  week:  "engagement earned in the last 7 days",
+  month: "engagement earned in the last 30 days",
+  all:   "cumulative totals",
 }
 
 const PLATFORM_COLOR: Record<string, string> = {
@@ -35,37 +42,68 @@ const ZERNIO_KEYS = [
   process.env.ZERNIO_API_KEY_2!,
 ]
 
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+interface Metrics {
+  views:    number
+  likes:    number
+  comments: number
+  shares:   number
+  saves:    number
+}
+
+const ZERO: Metrics = { views: 0, likes: 0, comments: 0, shares: 0, saves: 0 }
+
 interface ZernioAnalytics {
-  views?: number
-  likes?: number
-  comments?: number
-  shares?: number
-  saves?: number
-  impressions?: number
-  reach?: number
+  views?:          number
+  likes?:          number
+  comments?:       number
+  shares?:         number
+  saves?:          number
+  impressions?:    number
+  reach?:          number
   engagementRate?: number
-  lastUpdated?: string | null
+  lastUpdated?:    string | null
 }
 
 interface ZernioPost {
-  _id: string
-  latePostId: string
-  status: string
-  syncStatus: string
-  content?: string
+  _id:              string
+  latePostId:       string
+  status:           string
+  syncStatus:       string
+  content?:         string
   platformPostUrl?: string | null
-  analytics?: ZernioAnalytics
+  analytics?:       ZernioAnalytics
 }
 
 interface ClipRow {
-  id: string
-  video_id: string
-  clip_index: number
-  platform: string
-  caption: string | null
-  posted_at: string | null
+  id:             string
+  video_id:       string
+  clip_index:     number
+  platform:       string
+  caption:        string | null
+  posted_at:      string | null
   zernio_post_id: string | null
 }
+
+interface SnapshotRow {
+  clip_queue_id: string
+  views:         number
+  likes:         number
+  comments:      number
+  shares:        number
+  saves:         number
+  measured_at:   string
+}
+
+type EnrichedPost = ClipRow & {
+  zernio:      ZernioPost | null
+  cumulative:  Metrics
+  delta7d:     Metrics
+  periodDelta: Metrics
+}
+
+// ── Data fetching ──────────────────────────────────────────────────────────────
 
 async function getAllPosts(): Promise<ClipRow[]> {
   const PAGE = 1000
@@ -113,42 +151,117 @@ async function fetchZernioAnalyticsMap(): Promise<Map<string, ZernioPost>> {
   return map
 }
 
+async function fetchAllSnapshots(): Promise<SnapshotRow[]> {
+  const all: SnapshotRow[] = []
+  let from = 0
+  while (true) {
+    const { data } = await supabase
+      .from("clip_performance")
+      .select("clip_queue_id, views, likes, comments, shares, saves, measured_at")
+      .order("measured_at", { ascending: false })
+      .range(from, from + 999)
+    if (!data || data.length === 0) break
+    all.push(...(data as SnapshotRow[]))
+    if (data.length < 1000) break
+    from += 1000
+  }
+  return all
+}
+
+// ── Delta logic ────────────────────────────────────────────────────────────────
+
+// snapshots must be ordered newest first (enforced by query)
+function getBaselineMap(snapshots: SnapshotRow[], cutoffISO: string): Map<string, Metrics> {
+  const map = new Map<string, Metrics>()
+  for (const row of snapshots) {
+    if (row.measured_at >= cutoffISO) continue   // skip snapshots after cutoff
+    if (map.has(row.clip_queue_id))   continue   // already have most-recent for this clip
+    map.set(row.clip_queue_id, {
+      views:    row.views    || 0,
+      likes:    row.likes    || 0,
+      comments: row.comments || 0,
+      shares:   row.shares   || 0,
+      saves:    row.saves    || 0,
+    })
+  }
+  return map
+}
+
+function computeDelta(
+  current:   Metrics,
+  baseline:  Metrics | undefined,
+  postedAt:  string | null,
+  cutoffISO: string,
+): Metrics {
+  if (baseline) {
+    return {
+      views:    Math.max(0, current.views    - baseline.views),
+      likes:    Math.max(0, current.likes    - baseline.likes),
+      comments: Math.max(0, current.comments - baseline.comments),
+      shares:   Math.max(0, current.shares   - baseline.shares),
+      saves:    Math.max(0, current.saves    - baseline.saves),
+    }
+  }
+  // Post was created within the period — all its stats were earned in this period
+  if (postedAt && postedAt >= cutoffISO) return current
+  // Old post with no snapshot — delta unknown, show 0
+  return ZERO
+}
+
+function hasDelta(m: Metrics): boolean {
+  return m.views > 0 || m.likes > 0 || m.comments > 0 || m.shares > 0 || m.saves > 0
+}
+
+function cumulativeFromZernio(z: ZernioPost | null): Metrics {
+  const a = z?.analytics ?? {}
+  return {
+    views:    a.views    ?? 0,
+    likes:    a.likes    ?? 0,
+    comments: a.comments ?? 0,
+    shares:   a.shares   ?? 0,
+    saves:    a.saves    ?? 0,
+  }
+}
+
+function sumMetrics(posts: EnrichedPost[], pick: (p: EnrichedPost) => Metrics) {
+  return posts.reduce((acc, post) => {
+    const m = pick(post)
+    return {
+      views:    acc.views    + m.views,
+      likes:    acc.likes    + m.likes,
+      comments: acc.comments + m.comments,
+      shares:   acc.shares   + m.shares,
+      saves:    acc.saves    + m.saves,
+      count:    acc.count    + 1,
+    }
+  }, { ...ZERO, count: 0 })
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function cutoffForPeriod(period: Period): string {
+  if (period === "today")  return new Date(Date.now() - 24  * 3600_000).toISOString()
+  if (period === "week")   return new Date(Date.now() - 7   * 86400_000).toISOString()
+  if (period === "month")  return new Date(Date.now() - 30  * 86400_000).toISOString()
+  return new Date(0).toISOString()
+}
+
 function fmt(n: number) {
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
-  if (n >= 1000)    return `${(n / 1000).toFixed(1)}K`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
   return String(n)
 }
 
 function timeAgo(dateStr: string) {
   if (!dateStr) return "—"
   const diff = Date.now() - new Date(dateStr).getTime()
-  const h = Math.floor(diff / 3600000)
-  const d = Math.floor(diff / 86400000)
-  if (h < 1) return "just now"
+  const h = Math.floor(diff / 3_600_000)
+  const d = Math.floor(diff / 86_400_000)
+  if (h < 1)  return "just now"
   if (h < 24) return `${h}h ago`
   if (d === 1) return "yesterday"
-  if (d < 30) return `${d}d ago`
+  if (d < 30)  return `${d}d ago`
   return new Date(dateStr).toLocaleDateString("en-GB", { day: "numeric", month: "short" })
-}
-
-type EnrichedPost = ClipRow & { zernio: ZernioPost | null }
-
-function stats(posts: EnrichedPost[]) {
-  return {
-    views:    posts.reduce((s, p) => s + (p.zernio?.analytics?.views    ?? 0), 0),
-    likes:    posts.reduce((s, p) => s + (p.zernio?.analytics?.likes    ?? 0), 0),
-    comments: posts.reduce((s, p) => s + (p.zernio?.analytics?.comments ?? 0), 0),
-    shares:   posts.reduce((s, p) => s + (p.zernio?.analytics?.shares   ?? 0), 0),
-    count:    posts.length,
-  }
-}
-
-function periodCutoff(period: Period): number {
-  const now = Date.now()
-  if (period === "today")  return now - 24  * 3600_000
-  if (period === "week")   return now - 7   * 86400_000
-  if (period === "month")  return now - 30  * 86400_000
-  return 0
 }
 
 function buildHref(platform: string, period: string) {
@@ -159,6 +272,8 @@ function buildHref(platform: string, period: string) {
   return `/performance${qs ? `?${qs}` : ""}`
 }
 
+// ── Page ───────────────────────────────────────────────────────────────────────
+
 export default async function PerformancePage({
   searchParams,
 }: {
@@ -168,45 +283,64 @@ export default async function PerformancePage({
   const activePlatform = PLATFORMS.includes(platform as Platform) ? (platform as Platform) : "all"
   const activePeriod   = PERIODS.includes(period as Period)       ? (period as Period)     : "all"
 
-  const [allPosts, zernioMap] = await Promise.all([
+  const [allPosts, zernioMap, snapshots] = await Promise.all([
     getAllPosts(),
     fetchZernioAnalyticsMap(),
+    fetchAllSnapshots(),
   ])
 
-  // Enrich every post with Zernio analytics
-  const allEnriched: EnrichedPost[] = allPosts.map(p => ({
-    ...p,
-    zernio: (p.zernio_post_id ? zernioMap.get(p.zernio_post_id) : undefined) ?? null,
-  }))
+  const weekCutoff   = cutoffForPeriod("week")
+  const periodCutoff = cutoffForPeriod(activePeriod)
 
-  // Always-visible panels: all-time and rolling 7-day (ignores platform filter)
-  const weekCutoff  = Date.now() - 7 * 86400_000
-  const allTimeStats = stats(allEnriched)
-  const weekStats    = stats(allEnriched.filter(p =>
-    p.posted_at && new Date(p.posted_at).getTime() >= weekCutoff
-  ))
+  const weekBaselineMap   = getBaselineMap(snapshots, weekCutoff)
+  const periodBaselineMap = activePeriod === "week"
+    ? weekBaselineMap
+    : getBaselineMap(snapshots, periodCutoff)
 
-  // Days active + views/day
-  const oldest = [...allEnriched].filter(p => p.posted_at).sort(
-    (a, b) => new Date(a.posted_at!).getTime() - new Date(b.posted_at!).getTime()
-  )[0]
-  const daysActive  = oldest ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.posted_at!).getTime()) / 86400_000)) : 0
-  const viewsPerDay = daysActive > 0 ? Math.round(allTimeStats.views / daysActive) : 0
-
-  // Detail section: apply platform + period filters
-  const cutoff = periodCutoff(activePeriod)
-  const enriched = allEnriched.filter(p => {
-    const platformOk = activePlatform === "all" || p.platform === activePlatform
-    const periodOk   = activePeriod   === "all" || (p.posted_at && new Date(p.posted_at).getTime() >= cutoff)
-    return platformOk && periodOk
+  const allEnriched: EnrichedPost[] = allPosts.map(post => {
+    const zernio   = post.zernio_post_id ? (zernioMap.get(post.zernio_post_id) ?? null) : null
+    const current  = cumulativeFromZernio(zernio)
+    return {
+      ...post,
+      zernio,
+      cumulative:  current,
+      delta7d:     computeDelta(current, weekBaselineMap.get(post.id),   post.posted_at, weekCutoff),
+      periodDelta: activePeriod === "all"
+        ? current
+        : computeDelta(current, periodBaselineMap.get(post.id), post.posted_at, periodCutoff),
+    }
   })
 
-  const filteredStats  = stats(enriched)
-  const bestPerformer  = [...enriched]
-    .filter(p => (p.zernio?.analytics?.views ?? 0) > 0)
-    .sort((a, b) => (b.zernio?.analytics?.views ?? 0) - (a.zernio?.analytics?.views ?? 0))[0] ?? null
-  const liveCount      = enriched.filter(p => p.zernio?.status === "published").length
-  const failedCount    = enriched.filter(p => p.zernio?.status === "failed").length
+  // Top panels — fixed, ignore platform/period filter
+  const allTimeStats    = sumMetrics(allEnriched, p => p.cumulative)
+  const week7dStats     = sumMetrics(allEnriched, p => p.delta7d)
+  const weekActiveCount = allEnriched.filter(p => hasDelta(p.delta7d)).length
+
+  const oldest = [...allEnriched]
+    .filter(p => p.posted_at)
+    .sort((a, b) => new Date(a.posted_at!).getTime() - new Date(b.posted_at!).getTime())[0]
+  const daysActive  = oldest
+    ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.posted_at!).getTime()) / 86_400_000))
+    : 0
+  const viewsPerDay = daysActive > 0 ? Math.round(allTimeStats.views / daysActive) : 0
+
+  // Filtered section — apply platform + period
+  const enriched = allEnriched
+    .filter(p => {
+      const platformOk = activePlatform === "all" || p.platform === activePlatform
+      const periodOk   = activePeriod === "all" || hasDelta(p.periodDelta)
+      return platformOk && periodOk
+    })
+    .sort((a, b) =>
+      activePeriod === "all"
+        ? b.cumulative.views  - a.cumulative.views
+        : b.periodDelta.views - a.periodDelta.views
+    )
+
+  const filteredStats = sumMetrics(enriched, p => p.periodDelta)
+  const bestPerformer = enriched[0] ?? null
+  const liveCount     = enriched.filter(p => p.zernio?.status === "published").length
+  const failedCount   = enriched.filter(p => p.zernio?.status === "failed").length
 
   return (
     <div>
@@ -223,23 +357,23 @@ export default async function PerformancePage({
         </p>
       </div>
 
-      {/* Always-visible dual summary: All Time + This Week */}
+      {/* Always-visible: All Time (cumulative) + Last 7 Days (delta) */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1px", background: "var(--border)", border: "1px solid var(--border)", marginBottom: "2.5rem" }}>
-        {[
-          { label: "All Time",      s: allTimeStats, sub: `${allTimeStats.count} posts` },
-          { label: "Last 7 Days",   s: weekStats,    sub: `${weekStats.count} posts` },
-        ].map(({ label, s, sub }) => (
+        {([
+          { label: "All Time",    s: allTimeStats, sub: `${allTimeStats.count} posts total` },
+          { label: "Last 7 Days", s: week7dStats,  sub: `${weekActiveCount} posts gained engagement` },
+        ] as const).map(({ label, s, sub }) => (
           <div key={label} style={{ background: "var(--bg)", padding: "1.5rem" }}>
             <div style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "1rem" }}>
               {label}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem 1.5rem" }}>
-              {[
+              {([
                 { key: "Views",    v: s.views },
                 { key: "Likes",    v: s.likes },
                 { key: "Comments", v: s.comments },
                 { key: "Shares",   v: s.shares },
-              ].map(({ key, v }) => (
+              ] as const).map(({ key, v }) => (
                 <div key={key}>
                   <div style={{ fontSize: "1.5rem", fontWeight: 200, letterSpacing: "-0.04em", lineHeight: 1, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
                     {fmt(v)}
@@ -292,11 +426,9 @@ export default async function PerformancePage({
             </a>
           )
         })}
-        {activePeriod === "today" && (
-          <span style={{ fontSize: "11px", color: "var(--faint)", marginLeft: "4px" }}>
-            Analytics sync every ~2h
-          </span>
-        )}
+        <span style={{ fontSize: "11px", color: "var(--faint)", marginLeft: "4px" }}>
+          {PERIOD_DESC[activePeriod]}
+        </span>
       </div>
 
       {/* Best performer */}
@@ -319,8 +451,8 @@ export default async function PerformancePage({
             </p>
             <div style={{ display: "flex", gap: "16px" }}>
               {[
-                { label: "views", value: bestPerformer.zernio?.analytics?.views ?? 0 },
-                { label: "likes", value: bestPerformer.zernio?.analytics?.likes ?? 0 },
+                { label: "views", value: bestPerformer.periodDelta.views },
+                { label: "likes", value: bestPerformer.periodDelta.likes },
                 { label: "eng.",  value: bestPerformer.zernio?.analytics?.engagementRate },
               ].map(m => (
                 <div key={m.label} style={{ display: "flex", gap: "4px", alignItems: "baseline" }}>
@@ -359,19 +491,25 @@ export default async function PerformancePage({
 
       {/* Posts list */}
       <div style={{ borderTop: "1px solid var(--border)" }}>
-        <p style={{ fontSize: "11px", color: "var(--faint)", padding: "0.75rem 0", marginBottom: "0" }}>
-          {enriched.length} post{enriched.length !== 1 ? "s" : ""} · {liveCount} live{failedCount > 0 ? ` · ${failedCount} failed` : ""}
+        <p style={{ fontSize: "11px", color: "var(--faint)", padding: "0.75rem 0" }}>
+          {enriched.length} post{enriched.length !== 1 ? "s" : ""} with engagement
+          {activePlatform !== "all" && ` on ${PLATFORM_LABEL[activePlatform]}`}
+          {liveCount > 0 && ` · ${liveCount} live`}
+          {failedCount > 0 && ` · ${failedCount} failed`}
         </p>
+
         {enriched.length === 0 ? (
           <p style={{ padding: "4rem 0", textAlign: "center", color: "var(--faint)", fontSize: "13px" }}>
-            No posts in this period.
+            {activePeriod === "all"
+              ? "No posts yet."
+              : `No engagement earned in this period yet. Analytics update once daily.`}
           </p>
         ) : enriched.map(post => {
-          const z = post.zernio
+          const z  = post.zernio
+          const m  = post.periodDelta
           const isLive    = z?.status === "published"
           const hasFailed = z?.status === "failed"
           const isSyncing = z?.syncStatus === "pending" && !z?.analytics?.lastUpdated
-          const a = z?.analytics ?? {}
 
           return (
             <div key={post.id} style={{
@@ -413,18 +551,18 @@ export default async function PerformancePage({
                 ) : (
                   <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
                     {[
-                      { label: "views",    value: a.views    ?? 0 },
-                      { label: "likes",    value: a.likes    ?? 0 },
-                      { label: "comments", value: a.comments ?? 0 },
-                      { label: "shares",   value: a.shares   ?? 0 },
-                      { label: "saves",    value: a.saves    ?? 0 },
-                    ].map(m => (
-                      <div key={m.label} style={{ display: "flex", gap: "4px", alignItems: "baseline" }}>
-                        <span style={{ fontSize: "13px", fontWeight: 500, color: m.value > 0 ? "var(--text)" : "var(--faint)", fontVariantNumeric: "tabular-nums" }}>
-                          {fmt(m.value)}
+                      { label: "views",    value: m.views },
+                      { label: "likes",    value: m.likes },
+                      { label: "comments", value: m.comments },
+                      { label: "shares",   value: m.shares },
+                      { label: "saves",    value: m.saves },
+                    ].map(stat => (
+                      <div key={stat.label} style={{ display: "flex", gap: "4px", alignItems: "baseline" }}>
+                        <span style={{ fontSize: "13px", fontWeight: 500, color: stat.value > 0 ? "var(--text)" : "var(--faint)", fontVariantNumeric: "tabular-nums" }}>
+                          {fmt(stat.value)}
                         </span>
                         <span style={{ fontSize: "10px", color: "var(--faint)", textTransform: "capitalize" }}>
-                          {m.label}
+                          {stat.label}
                         </span>
                       </div>
                     ))}
@@ -440,7 +578,7 @@ export default async function PerformancePage({
 
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div style={{ fontSize: "1.25rem", fontWeight: 200, letterSpacing: "-0.03em", color: "var(--text)" }}>
-                  {isSyncing ? "—" : a.engagementRate ? `${Number(a.engagementRate).toFixed(1)}%` : "—"}
+                  {isSyncing ? "—" : z?.analytics?.engagementRate ? `${Number(z.analytics.engagementRate).toFixed(1)}%` : "—"}
                 </div>
                 <div style={{ fontSize: "10px", color: "var(--faint)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
                   Engagement
