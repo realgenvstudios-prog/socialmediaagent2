@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server"
 // Edge Runtime doesn't have Node.js crypto — use Web Crypto API (crypto.subtle) instead
 async function expectedToken(): Promise<string> {
   const enc = new TextEncoder()
+  const salt = process.env.SESSION_SALT ?? ""
   const key = await crypto.subtle.importKey(
     "raw",
     enc.encode(process.env.DASHBOARD_PASSWORD ?? ""),
@@ -10,7 +11,7 @@ async function expectedToken(): Promise<string> {
     false,
     ["sign"],
   )
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode("konnectedminds-session-v1"))
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(`konnectedminds-session-v1:${salt}`))
   return Array.from(new Uint8Array(sig))
     .map(b => b.toString(16).padStart(2, "0"))
     .join("")

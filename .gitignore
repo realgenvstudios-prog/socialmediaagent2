@@ -11,3 +11,4 @@ transcripts/
 venv/
 scripts/trigger_post.sh
 *cookies*.txt
+config.json

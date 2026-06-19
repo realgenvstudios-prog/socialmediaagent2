@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 import { createHmac } from "crypto"
 
 function sessionToken() {
+  const salt = process.env.SESSION_SALT ?? ""
   return createHmac("sha256", process.env.DASHBOARD_PASSWORD ?? "")
-    .update("konnectedminds-session-v1")
+    .update(`konnectedminds-session-v1:${salt}`)
     .digest("hex")
 }
 
