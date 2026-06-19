@@ -364,7 +364,7 @@ export default async function PerformancePage({
           Performance
         </h1>
         <p style={{ fontSize: "13px", color: "var(--muted)" }}>
-          Live stats from Zernio
+          Live stats from socials
           {daysActive > 0 && ` · ${daysActive} days active · ${fmt(viewsPerDay)} views/day avg`}
         </p>
       </div>
