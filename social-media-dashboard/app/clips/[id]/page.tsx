@@ -62,7 +62,7 @@ export default async function ClipDetailPage({ params }: { params: Promise<{ id:
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between gap-4">
                   <span className="text-gray-400">Video</span>
-                  <span className="text-gray-800 font-medium text-right truncate max-w-[180px]">{(clip as any).videos?.title ?? "—"}</span>
+                  <span className="text-gray-800 font-medium text-right truncate max-w-[180px]">{(clip as any).videos?.title ?? "-"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Clip #</span>
@@ -70,7 +70,7 @@ export default async function ClipDetailPage({ params }: { params: Promise<{ id:
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Range</span>
-                  <span className="text-gray-800 font-mono font-medium">{(clip as any).start_seconds?.toFixed(0)}s – {(clip as any).end_seconds?.toFixed(0)}s</span>
+                  <span className="text-gray-800 font-mono font-medium">{(clip as any).start_seconds?.toFixed(0)}s to {(clip as any).end_seconds?.toFixed(0)}s</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Created</span>

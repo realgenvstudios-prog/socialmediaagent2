@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   const { times, max_per_run } = body
 
   if (!Array.isArray(times) || times.length === 0 || times.length > 6) {
-    return NextResponse.json({ error: "times must be an array of 1–6 time strings" }, { status: 400 })
+    return NextResponse.json({ error: "times must be an array of 1 to 6 time strings" }, { status: 400 })
   }
 
   const { error } = await supabase

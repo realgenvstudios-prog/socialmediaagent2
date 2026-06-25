@@ -139,10 +139,10 @@ async function generateBriefing(data: {
     .join(", ")
 
   const bestLine = data.bestThisWeek
-    ? `Best clip this week: "${data.bestThisWeek.hook}" — ${data.bestThisWeek.views.toLocaleString()} views on ${data.bestThisWeek.platform}`
+    ? `Best clip this week: "${data.bestThisWeek.hook}", ${data.bestThisWeek.views.toLocaleString()} views on ${data.bestThisWeek.platform}`
     : "No view data synced yet this week"
 
-  const prompt = `You are the voice of KonnectedMinds Content Studio — a social media automation platform posting African entrepreneur podcast clips to TikTok, Instagram, YouTube Shorts, and Facebook Reels.
+  const prompt = `You are the voice of KonnectedMinds Content Studio, a social media automation platform posting African entrepreneur podcast clips to TikTok, Instagram, YouTube Shorts, and Facebook Reels.
 
 Write a 2-3 sentence daily briefing. Be direct, sharp, slightly personal, like a smart analyst who knows the business well. Reference the real numbers naturally. No bullet points, no headers, no fluff, no greeting, no em dashes.
 
@@ -387,7 +387,7 @@ export default async function OverviewPage() {
               Queue is running low
             </p>
             <p style={{ fontSize: "11px", color: "var(--faint)" }}>
-              {pending} clip{pending !== 1 ? "s" : ""} left — about {Math.floor(pending / 3)} day{Math.floor(pending / 3) !== 1 ? "s" : ""} at current pace. Process a new video to keep the pipeline full.
+              {pending} clip{pending !== 1 ? "s" : ""} left, about {Math.floor(pending / 3)} day{Math.floor(pending / 3) !== 1 ? "s" : ""} at current pace. Process a new video to keep the pipeline full.
             </p>
           </div>
           <span style={{ fontSize: "18px", flexShrink: 0 }}>⚠</span>
@@ -457,7 +457,7 @@ export default async function OverviewPage() {
                     {allCount}
                   </span>
                   <span style={{ fontSize: "13px", color: trendColor, fontWeight: 600, width: "16px", textAlign: "center" }}>
-                    {weekCount > 0 ? trendIcon : "—"}
+                    {weekCount > 0 ? trendIcon : ""}
                   </span>
                 </div>
                 {weekCount > 0 && (

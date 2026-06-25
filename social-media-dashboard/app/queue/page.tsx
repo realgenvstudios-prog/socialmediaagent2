@@ -98,7 +98,7 @@ function getClipStatus(platforms: Record<string, string>): "live" | "partial" | 
 }
 
 function timeAgo(dateStr: string) {
-  if (!dateStr) return "—"
+  if (!dateStr) return "-"
   const diff = Date.now() - new Date(dateStr).getTime()
   const h = Math.floor(diff / 3600000)
   const d = Math.floor(diff / 86400000)

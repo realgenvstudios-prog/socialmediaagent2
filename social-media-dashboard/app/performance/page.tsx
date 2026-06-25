@@ -260,7 +260,7 @@ function fmt(n: number) {
 }
 
 function timeAgo(dateStr: string) {
-  if (!dateStr) return "—"
+  if (!dateStr) return "-"
   const diff = Date.now() - new Date(dateStr).getTime()
   const h = Math.floor(diff / 3_600_000)
   const d = Math.floor(diff / 86_400_000)
@@ -469,7 +469,7 @@ export default async function PerformancePage({
               ].map(m => (
                 <div key={m.label} style={{ display: "flex", gap: "4px", alignItems: "baseline" }}>
                   <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
-                    {m.label === "eng." ? (m.value ? `${Number(m.value).toFixed(1)}%` : "—") : fmt(Number(m.value))}
+                    {m.label === "eng." ? (m.value ? `${Number(m.value).toFixed(1)}%` : "-") : fmt(Number(m.value))}
                   </span>
                   <span style={{ fontSize: "10px", color: "var(--faint)" }}>{m.label}</span>
                 </div>
@@ -558,7 +558,7 @@ export default async function PerformancePage({
 
                 {isSyncing ? (
                   <span style={{ fontSize: "11px", color: "var(--faint)", fontStyle: "italic" }}>
-                    Analytics syncing — check back in a few hours
+                    Analytics syncing, check back in a few hours
                   </span>
                 ) : (
                   <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
@@ -590,7 +590,7 @@ export default async function PerformancePage({
 
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div style={{ fontSize: "1.25rem", fontWeight: 200, letterSpacing: "-0.03em", color: "var(--text)" }}>
-                  {isSyncing ? "—" : z?.analytics?.engagementRate ? `${Number(z.analytics.engagementRate).toFixed(1)}%` : "—"}
+                  {isSyncing ? "-" : z?.analytics?.engagementRate ? `${Number(z.analytics.engagementRate).toFixed(1)}%` : "-"}
                 </div>
                 <div style={{ fontSize: "10px", color: "var(--faint)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
                   Engagement

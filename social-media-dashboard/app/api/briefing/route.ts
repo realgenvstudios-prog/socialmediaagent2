@@ -35,12 +35,12 @@ export async function POST(req: NextRequest) {
     .join(", ")
 
   const bestLine = bestThisWeek
-    ? `Best clip this week: "${safe(bestThisWeek.hook)}" — ${Number(bestThisWeek.views).toLocaleString()} views on ${safe(bestThisWeek.platform)}`
+    ? `Best clip this week: "${safe(bestThisWeek.hook)}", ${Number(bestThisWeek.views).toLocaleString()} views on ${safe(bestThisWeek.platform)}`
     : "No view data synced yet this week"
 
-  const prompt = `You are the voice of KonnectedMinds Content Studio — a social media automation platform posting African entrepreneur podcast clips to TikTok, Instagram, YouTube Shorts, and Facebook Reels.
+  const prompt = `You are the voice of KonnectedMinds Content Studio, a social media automation platform posting African entrepreneur podcast clips to TikTok, Instagram, YouTube Shorts, and Facebook Reels.
 
-Write a 2-3 sentence daily briefing. Be direct, sharp, slightly personal — like a smart analyst who knows the business well. Reference the real numbers naturally. No bullet points, no headers, no fluff, no greeting.
+Write a 2-3 sentence daily briefing. Be direct, sharp, slightly personal, like a smart analyst who knows the business well. Reference the real numbers naturally. No bullet points, no headers, no fluff, no greeting, no em dashes.
 
 Data:
 - Total posts published all-time: ${totalPosted}

@@ -56,7 +56,7 @@ export default function SchedulePage() {
         {/* Time picker */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Posting times (UTC) — {times.length} selected
+            Posting times (UTC) · {times.length} selected
           </p>
           <div className="grid grid-cols-4 gap-2">
             {ALL_TIMES.map(t => (

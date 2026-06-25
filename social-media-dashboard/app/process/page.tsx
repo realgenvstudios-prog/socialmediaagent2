@@ -86,7 +86,7 @@ export default function ProcessPage() {
           Process
         </h1>
         <p style={{ fontSize: "13px", color: "var(--muted)" }}>
-          Pick a video from the channel — the agent picks the clips, burns subtitles, and queues everything automatically.
+          Pick a video from the channel. The agent picks the clips, burns subtitles, and queues everything automatically.
         </p>
       </div>
 

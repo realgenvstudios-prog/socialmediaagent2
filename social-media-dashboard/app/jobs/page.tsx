@@ -39,7 +39,7 @@ export default async function JobsPage() {
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Jobs</h1>
-          <p className="text-sm text-gray-500 mt-1">Pipeline job queue — {jobs.length} total</p>
+          <p className="text-sm text-gray-500 mt-1">Pipeline job queue · {jobs.length} total</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
           {Object.entries(counts).map(([status, count]) => (
@@ -84,12 +84,12 @@ export default async function JobsPage() {
                   </span>
                 </td>
                 <td className="px-5 py-3.5 max-w-xs">
-                  <p className="text-gray-800 font-medium truncate">{(job as any).videos?.title ?? <span className="text-gray-300">—</span>}</p>
+                  <p className="text-gray-800 font-medium truncate">{(job as any).videos?.title ?? <span className="text-gray-300">-</span>}</p>
                 </td>
                 <td className="px-5 py-3.5 max-w-xs">
                   {job.error
                     ? <p className="text-xs text-red-500 truncate">{job.error}</p>
-                    : <span className="text-gray-300">—</span>
+                    : <span className="text-gray-300">-</span>
                   }
                 </td>
                 <td className="px-5 py-3.5 text-right text-xs text-gray-400 tabular-nums whitespace-nowrap">

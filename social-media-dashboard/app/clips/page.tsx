@@ -84,7 +84,7 @@ export default async function ClipsPage() {
                 {/* Body */}
                 <div className="p-4">
                   <p className="text-xs text-gray-400 truncate mb-1">
-                    {clip.videos?.title ?? "—"} · Clip {clip.clip_index}
+                    {clip.videos?.title ?? "-"} · Clip {clip.clip_index}
                   </p>
                   <p className="text-sm text-gray-800 line-clamp-2 leading-relaxed min-h-[2.5rem]">
                     {clip.caption || <span className="text-gray-300 italic">No caption</span>}
