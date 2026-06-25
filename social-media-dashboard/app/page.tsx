@@ -387,7 +387,7 @@ export default async function OverviewPage() {
               Queue is running low
             </p>
             <p style={{ fontSize: "11px", color: "var(--faint)" }}>
-              {pending} clip{pending !== 1 ? "s" : ""} left, about {Math.floor(pending / 2)} day{Math.floor(pending / 2) !== 1 ? "s" : ""} at current pace. Process a new video to keep the pipeline full.
+              {pending} clip{pending !== 1 ? "s" : ""} left, about {Math.floor(pending / 8)} day{Math.floor(pending / 8) !== 1 ? "s" : ""} at current pace. Process a new video to keep the pipeline full.
             </p>
           </div>
           <span style={{ fontSize: "18px", flexShrink: 0 }}>⚠</span>
