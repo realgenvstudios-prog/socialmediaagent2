@@ -241,10 +241,11 @@ def _log_clip_selections(supabase, video_id: str, clips: list, segments: list | 
 
 
 def _load_channel_intelligence(supabase) -> str:
-    """Build explicit ranked directives from real channel performance data."""
+    """Build explicit ranked directives from real channel performance data and algorithm research."""
     try:
         stats_row = supabase.table("channel_intelligence").select("stats").eq("id", "singleton").maybe_single().execute()
         log = supabase.table("clip_selection_log").select("hook_type,topic_category,performance_tier,views").not_("performance_tier", "is", None).execute()
+        algo_row = supabase.table("settings").select("value").eq("key", "algorithm_research_v2").maybe_single().execute()
 
         parts = []
 
@@ -296,6 +297,11 @@ def _load_channel_intelligence(supabase) -> str:
                     directive = "PRIORITISE" if i == 0 else ("PREFER" if i < 3 else "NEUTRAL")
                     lines.append(f"  {i+1}. {name.capitalize()}: {avg} avg views, {top_pct}% top tier — {directive}")
                 parts.append("\n".join(lines))
+
+        if algo_row and algo_row.data:
+            algo_text = (algo_row.data.get("value") or {}).get("text", "")
+            if algo_text:
+                parts.append(f"PLATFORM ALGORITHM INSIGHTS (current, from web research):\n{algo_text}")
 
         return "\n\n".join(parts) if parts else ""
     except Exception:

@@ -171,7 +171,7 @@ def research_platform_algorithms() -> str:
             updated_at = val.get("updated_at", "")
             if updated_at:
                 age = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).days
-                if age < 7 and val.get("text"):
+                if age < 3 and val.get("text"):
                     print(f"  Using cached algorithm research ({age}d old).")
                     return val["text"]
     except Exception:
