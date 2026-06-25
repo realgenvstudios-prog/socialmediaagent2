@@ -241,17 +241,63 @@ def _log_clip_selections(supabase, video_id: str, clips: list, segments: list | 
 
 
 def _load_channel_intelligence(supabase) -> str:
-    """Load the latest performance intelligence brief from Supabase, if available."""
+    """Build explicit ranked directives from real channel performance data."""
     try:
-        row = supabase.table("channel_intelligence").select("summary,stats").eq("id", "singleton").maybe_single().execute()
-        if row.data and row.data.get("summary"):
-            stats = row.data.get("stats") or {}
-            header = (
-                f"(Based on {stats.get('clips_analysed', '?')} clips — "
-                f"{stats.get('total_views', '?')} total views — "
-                f"updated {stats.get('generated_at', '?')[:10]})"
-            )
-            return f"{header}\n\n{row.data['summary']}"
+        stats_row = supabase.table("channel_intelligence").select("stats").eq("id", "singleton").maybe_single().execute()
+        log = supabase.table("clip_selection_log").select("hook_type,topic_category,performance_tier,views").not_("performance_tier", "is", None).execute()
+
+        parts = []
+
+        if stats_row.data and stats_row.data.get("stats"):
+            s = stats_row.data["stats"]
+            parts.append(f"Channel data based on {s.get('clips_analysed','?')} clips posted and {s.get('total_views','?')} total views.")
+
+        if log.data:
+            def build_map(key):
+                m = {}
+                for r in log.data:
+                    k = (r.get(key) or "unknown").lower()
+                    if k not in m:
+                        m[k] = {"views": [], "top": 0, "total": 0}
+                    if r.get("views"):
+                        m[k]["views"].append(r["views"])
+                    m[k]["total"] += 1
+                    if r.get("performance_tier") == "top":
+                        m[k]["top"] += 1
+                return sorted(
+                    [(k, round(sum(v["views"]) / len(v["views"])) if v["views"] else 0, v["top"], v["total"])
+                     for k, v in m.items()],
+                    key=lambda x: -x[1]
+                )
+
+            hook_ranks = build_map("hook_type")
+            topic_ranks = build_map("topic_category")
+            top_avg = hook_ranks[0][1] if hook_ranks else 1
+
+            if hook_ranks:
+                lines = ["HOOK TYPE PERFORMANCE (real avg views on this channel):"]
+                for i, (name, avg, top, total) in enumerate(hook_ranks):
+                    top_pct = round(top / total * 100) if total else 0
+                    if i == 0:
+                        directive = "PRIORITISE — best performer"
+                    elif i < 3:
+                        directive = "PREFER"
+                    elif avg < top_avg * 0.5:
+                        directive = "AVOID unless exceptional"
+                    else:
+                        directive = "NEUTRAL"
+                    lines.append(f"  {i+1}. {name.capitalize()}: {avg} avg views, {top_pct}% top tier — {directive}")
+                parts.append("\n".join(lines))
+
+            if topic_ranks:
+                lines = ["TOPIC CATEGORY PERFORMANCE (real avg views on this channel):"]
+                for i, (name, avg, top, total) in enumerate(topic_ranks[:8]):
+                    top_pct = round(top / total * 100) if total else 0
+                    directive = "PRIORITISE" if i == 0 else ("PREFER" if i < 3 else "NEUTRAL")
+                    lines.append(f"  {i+1}. {name.capitalize()}: {avg} avg views, {top_pct}% top tier — {directive}")
+                parts.append("\n".join(lines))
+
+        return "\n\n".join(parts) if parts else ""
     except Exception:
         pass
     return ""
@@ -273,22 +319,22 @@ def select_clips(anthropic_client, segments, video_title, supabase=None):
     intelligence_block = ""
     if intelligence:
         intelligence_block = f"""
-━━━ CHANNEL PERFORMANCE INTELLIGENCE ━━━
 
-This is real data from clips already posted on this channel. Use it to inform every decision you make below — hook style, topic selection, clip length, and platform captions.
+━━━ CHANNEL PERFORMANCE DATA — MANDATORY DIRECTIVES ━━━
 
 {intelligence}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+These rankings come from real views on clips already posted on this channel. They are not suggestions — they are your selection criteria. When two candidate moments are of similar quality, always choose the one whose hook type or topic category ranks higher above.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
-        print("  [Intelligence] Loaded channel performance brief into prompt.")
+        print("  [Intelligence] Loaded channel performance directives into prompt.")
     else:
         print("  [Intelligence] No brief available yet -- using base rules only.")
 
     prompt = f"""You are an expert viral short-form content strategist who deeply understands what makes people stop scrolling and watch a video clip all the way through to completion.
 
-Your job: analyze the provided timestamped podcast transcript and identify the 10 to 12 best, most high-impact moments to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels.{intelligence_block}
+Your job: analyze the provided timestamped podcast transcript and identify EXACTLY 7 of the highest-impact moments to clip for Instagram Reels, TikTok, YouTube Shorts, and Facebook Reels. Quality over quantity — 7 exceptional clips beat 12 average ones.{intelligence_block}
 
 Video title: {video_title}
 
@@ -357,6 +403,20 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
 
 7. TIMESTAMP CONVERSION — Each transcript line shows [MM:SS-MM:SS] format. Convert the start time of your chosen clip to raw integer seconds for start_seconds, and the end time to raw integer seconds for end_seconds. Example: a clip starting at 02:05 and ending at 03:07 becomes start_seconds: 125, end_seconds: 187.
 
+━━━ SELECTION PROCESS — Follow these steps before writing any JSON ━━━
+
+STEP 1 — CANDIDATE SCAN: Read the full transcript and identify 12 to 15 moments that could potentially make strong clips. Note the timestamp and opening line for each.
+
+STEP 2 — SCORE EACH CANDIDATE: For every candidate, mentally assign three scores:
+  - Hook score (0-10): How immediately compelling is the first sentence to someone scrolling?
+  - Payoff score (0-10): Does the clip land on a strong, satisfying conclusion?
+  - Audience score (0-10): Will the KonnectedMinds audience (Ghana/Africa, entrepreneurship, business, ambition) feel this deeply?
+  Total = Hook + Payoff + Audience (max 30). Reject any candidate scoring below 21.
+
+STEP 3 — APPLY CHANNEL DATA: Cross-reference your scored candidates against the performance directives above. Where two candidates have similar scores, choose the one whose hook type or topic category ranks higher in the channel data.
+
+STEP 4 — SELECT EXACTLY 7: Take the 7 highest-scoring candidates after Steps 2 and 3. These are your final clips. Do not include any clip you are not confident about.
+
 ━━━ CAPTION RULES ━━━
 
 NEVER use em dashes (—) anywhere in any caption. Use a comma, a full stop, or rewrite the sentence instead.
@@ -373,7 +433,7 @@ facebook: 2–3 sentences for a slightly older audience. More context, less hype
 
 ━━━ OUTPUT FORMAT ━━━
 
-CRITICAL: Output ONLY the raw JSON array. Do not include any introductory sentences, conversational text, markdown code fences, or concluding remarks. The response must start with [ and end with ] and be 100% pure parseable JSON.
+CRITICAL: Output ONLY the raw JSON array containing EXACTLY 7 clips. Do not include any introductory sentences, conversational text, markdown code fences, or concluding remarks. The response must start with [ and end with ] and be 100% pure parseable JSON.
 
 [
   {{
