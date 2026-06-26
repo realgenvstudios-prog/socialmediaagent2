@@ -154,6 +154,114 @@ def save_intelligence(summary: str, stats: dict) -> None:
     print("  Saved channel intelligence to Supabase.")
 
 
+# ── YouTube Analytics ──────────────────────────────────────────────────────────
+
+def fetch_youtube_analytics() -> str:
+    """Pull YouTube Analytics data for the last 30 days using OAuth credentials."""
+    client_id     = os.environ.get("YOUTUBE_CLIENT_ID")
+    client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET")
+    refresh_token = os.environ.get("YOUTUBE_REFRESH_TOKEN")
+
+    if not all([client_id, client_secret, refresh_token]):
+        print("  YouTube Analytics: credentials not configured, skipping.")
+        return ""
+
+    try:
+        # Refresh access token
+        token_resp = requests.post("https://oauth2.googleapis.com/token", data={
+            "client_id":     client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type":    "refresh_token",
+        })
+        token_resp.raise_for_status()
+        access_token = token_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        end_date   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        start_date = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=30)).strftime("%Y-%m-%d")
+
+        base_params = {
+            "ids":       "channel==MINE",
+            "startDate": start_date,
+            "endDate":   end_date,
+        }
+
+        # Overall channel metrics
+        channel_resp = requests.get(
+            "https://youtubeanalytics.googleapis.com/v2/reports",
+            headers=headers,
+            params={**base_params, "metrics": "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost"},
+        )
+        channel_resp.raise_for_status()
+        channel_data = channel_resp.json()
+
+        # Traffic sources
+        traffic_resp = requests.get(
+            "https://youtubeanalytics.googleapis.com/v2/reports",
+            headers=headers,
+            params={**base_params, "metrics": "views", "dimensions": "insightTrafficSourceType", "sort": "-views"},
+        )
+        traffic_resp.raise_for_status()
+        traffic_data = traffic_resp.json()
+
+        # Top videos by views
+        videos_resp = requests.get(
+            "https://youtubeanalytics.googleapis.com/v2/reports",
+            headers=headers,
+            params={**base_params, "metrics": "views,averageViewPercentage,averageViewDuration,likes,shares,comments", "dimensions": "video", "sort": "-views", "maxResults": 10},
+        )
+        videos_resp.raise_for_status()
+        videos_data = videos_resp.json()
+
+        # Format output
+        lines = ["YOUTUBE ANALYTICS (last 30 days):"]
+
+        if channel_data.get("rows"):
+            row = channel_data["rows"][0]
+            cols = [h["name"] for h in channel_data["columnHeaders"]]
+            d = dict(zip(cols, row))
+            lines.append(f"  Views: {int(d.get('views', 0)):,}")
+            lines.append(f"  Avg view duration: {int(d.get('averageViewDuration', 0))}s")
+            lines.append(f"  Avg view percentage: {round(d.get('averageViewPercentage', 0), 1)}%")
+            lines.append(f"  Subscribers gained: {int(d.get('subscribersGained', 0))}")
+            lines.append(f"  Subscribers lost: {int(d.get('subscribersLost', 0))}")
+
+        if traffic_data.get("rows"):
+            lines.append("  Traffic sources:")
+            for row in traffic_data["rows"][:6]:
+                source, views = row[0], int(row[1])
+                readable = {
+                    "YT_SEARCH": "YouTube Search",
+                    "SUBSCRIBER": "Subscribers",
+                    "SHORTS": "Shorts shelf",
+                    "SUGGESTED_VIDEOS": "Suggested videos",
+                    "NO_LINK_OTHER": "Direct/other",
+                    "EXTERNAL_APP": "External apps",
+                    "NOTIFICATION": "Notifications",
+                }.get(source, source)
+                lines.append(f"    {readable}: {views:,} views")
+
+        if videos_data.get("rows"):
+            cols = [h["name"] for h in videos_data["columnHeaders"]]
+            lines.append("  Top 10 Shorts (by views):")
+            for row in videos_data["rows"]:
+                d = dict(zip(cols, row))
+                lines.append(
+                    f"    video/{d['video']}: {int(d.get('views',0)):,} views | "
+                    f"{round(d.get('averageViewPercentage',0),1)}% retention | "
+                    f"{int(d.get('averageViewDuration',0))}s avg watch | "
+                    f"{int(d.get('likes',0))} likes | {int(d.get('shares',0))} shares"
+                )
+
+        print("  YouTube Analytics: data fetched successfully.")
+        return "\n".join(lines)
+
+    except Exception as e:
+        print(f"  YouTube Analytics fetch failed: {e}")
+        return ""
+
+
 # ── Algorithm research ─────────────────────────────────────────────────────────
 
 def research_platform_algorithms() -> str:
@@ -700,6 +808,7 @@ def analyse_with_claude(
     follower_data: dict[str, int],
     content_analysis: str,
     growth_analysis: str,
+    youtube_analytics: str = "",
 ) -> str:
     """Send all performance data to Claude for strategic analysis."""
     if not rows:
@@ -772,12 +881,13 @@ def analyse_with_claude(
         for platform, count in follower_data.items():
             follower_text += f"  {platform.upper()}: {count:,} followers\n"
 
-    decision_block  = f"\n{decision_history}\n"                                              if decision_history  else ""
-    timing_block    = f"\n{timing_text}\n"                                                   if timing_text       else ""
-    caption_block   = f"\n{caption_text}\n"                                                  if caption_text      else ""
-    algorithm_block = f"\nPLATFORM ALGORITHM RESEARCH (current state):\n{algorithm_research}\n" if algorithm_research else ""
-    content_block   = f"\n{content_analysis}\n"                                              if content_analysis  else ""
-    growth_block    = f"\n{growth_analysis}\n"                                               if growth_analysis   else ""
+    decision_block   = f"\n{decision_history}\n"                                              if decision_history   else ""
+    timing_block     = f"\n{timing_text}\n"                                                   if timing_text        else ""
+    caption_block    = f"\n{caption_text}\n"                                                  if caption_text       else ""
+    algorithm_block  = f"\nPLATFORM ALGORITHM RESEARCH (current state):\n{algorithm_research}\n" if algorithm_research else ""
+    content_block    = f"\n{content_analysis}\n"                                              if content_analysis   else ""
+    growth_block     = f"\n{growth_analysis}\n"                                               if growth_analysis    else ""
+    youtube_block    = f"\n{youtube_analytics}\n"                                             if youtube_analytics  else ""
 
     prompt = f"""You are an expert social media strategist and content agent for the Konnected Minds Podcast (Ghana-based business/entrepreneurship channel posting short-form clips to TikTok, Instagram Reels, YouTube Shorts, and Facebook Reels).
 
@@ -786,7 +896,7 @@ Your role is not just to analyse past performance — you must act as a smart, p
 Below is everything you need to know:
 
 {dataset_text}
-{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{content_block}{growth_block}{algorithm_block}
+{platform_text}{follower_text}{decision_block}{timing_block}{caption_block}{content_block}{growth_block}{youtube_block}{algorithm_block}
 
 Write a CHANNEL INTELLIGENCE BRIEF that the clip selection AI will read before picking and captioning clips from a new episode. This brief must make the AI smarter — not just reactive to past data, but genuinely strategic about growth.
 
@@ -862,6 +972,9 @@ def main():
         pass
 
     # Gather all intelligence inputs
+    print("Fetching YouTube Analytics...")
+    youtube_analytics = fetch_youtube_analytics()
+
     print("Researching platform algorithms...")
     algorithm_research = research_platform_algorithms()
 
@@ -891,7 +1004,7 @@ def main():
     }
 
     print("Sending to Claude for strategic analysis...")
-    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data, content_analysis, growth_analysis)
+    summary = analyse_with_claude(rows, decision_history, algorithm_research, timing_text, caption_text, follower_data, content_analysis, growth_analysis, youtube_analytics)
     print("  Analysis complete.")
     print("\n--- INTELLIGENCE BRIEF PREVIEW ---")
     print(summary[:600] + ("..." if len(summary) > 600 else ""))
