@@ -50,7 +50,7 @@ export default function LoginPage() {
               boxShadow: "0 0 0 2.5px rgba(22,163,74,0.18)",
             }} />
             <span style={{ fontSize: "14px", fontWeight: 600, letterSpacing: "-0.02em", color: "var(--text)" }}>
-              KonnectedMinds
+              Afropolitan
             </span>
           </div>
           <p style={{ fontSize: "12px", color: "var(--faint)", letterSpacing: "0.05em" }}>

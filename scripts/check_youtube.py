@@ -203,7 +203,7 @@ def trigger_workflow(video):
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    print("Checking for new Konnected Minds videos (long-form only)...")
+    print("Checking for new Afropolitan videos (long-form only)...")
     videos = get_recent_long_videos(max_results=5)
 
     if not videos:

@@ -398,7 +398,7 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
   Also prioritise moments that are:
   • A specific number, amount, or statistic that reveals something surprising
   • A personal failure, mistake, or lesson the speaker learned the hard way
-  • A take that the Konnected Minds audience (Ghana/Africa, entrepreneurship, business, faith, ambition) will passionately agree or disagree with
+  • A take that the Afropolitan audience (African diaspora, entrepreneurship, business, wealth, identity, ambition) will passionately agree or disagree with
   • A revelation that reframes how the audience thinks about something they already believe
 
 6. ALGORITHM SIGNALS — Pick moments that will drive measurable actions:
@@ -416,7 +416,7 @@ STEP 1 — CANDIDATE SCAN: Read the full transcript and identify 12 to 15 moment
 STEP 2 — SCORE EACH CANDIDATE: For every candidate, mentally assign three scores:
   - Hook score (0-10): How immediately compelling is the first sentence to someone scrolling?
   - Payoff score (0-10): Does the clip land on a strong, satisfying conclusion?
-  - Audience score (0-10): Will the KonnectedMinds audience (Ghana/Africa, entrepreneurship, business, ambition) feel this deeply?
+  - Audience score (0-10): Will the Afropolitan audience (African diaspora, entrepreneurship, business, wealth, ambition) feel this deeply?
   Total = Hook + Payoff + Audience (max 30). Reject any candidate scoring below 21.
 
 STEP 3 — APPLY CHANNEL DATA: Cross-reference your scored candidates against the performance directives above. Where two candidates have similar scores, choose the one whose hook type or topic category ranks higher in the channel data.

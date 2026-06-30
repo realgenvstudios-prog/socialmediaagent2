@@ -8,7 +8,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] })
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Content Studio · KonnectedMinds",
+  title: "Content Studio · Afropolitan",
   description: "Social media automation dashboard",
 }
 
@@ -45,7 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 boxShadow: "0 0 0 2.5px rgba(22,163,74,0.18)",
               }} />
               <span style={{ fontSize: "13px", fontWeight: 600, letterSpacing: "-0.02em", color: "var(--text)" }}>
-                KonnectedMinds
+                Afropolitan
               </span>
               <span style={{
                 fontSize: "11px",

@@ -301,7 +301,7 @@ FACEBOOK REELS: Who it reaches and how, what engagement signals matter most, how
 
 For each platform: focus on what ACTUALLY drives follower growth and long-term audience building, not just one-off viral views. Include any significant algorithm changes in the last 12 months worth knowing.
 
-Context: Konnected Minds is an African entrepreneurship podcast channel (Ghana-based) posting 60-second clips 3 times per day. Audience is business-minded 20-45 year olds interested in money, hustle, real stories, and Africa-specific business topics.
+Context: Afropolitan is an African diaspora podcast channel posting 60-second clips 3 times per day. Audience is ambitious, business-minded 20-45 year olds from the African diaspora interested in money, entrepreneurship, identity, wealth building, and Africa-specific topics.
 
 Write specific, data-backed insights only. No padding."""
 
@@ -889,7 +889,7 @@ def analyse_with_claude(
     growth_block     = f"\n{growth_analysis}\n"                                               if growth_analysis    else ""
     youtube_block    = f"\n{youtube_analytics}\n"                                             if youtube_analytics  else ""
 
-    prompt = f"""You are an expert social media strategist and content agent for the Konnected Minds Podcast (Ghana-based business/entrepreneurship channel posting short-form clips to TikTok, Instagram Reels, YouTube Shorts, and Facebook Reels).
+    prompt = f"""You are an expert social media strategist and content agent for the Afropolitan Podcast (African diaspora business/entrepreneurship channel posting short-form clips to TikTok, Instagram Reels, YouTube Shorts, and Facebook Reels).
 
 Your role is not just to analyse past performance — you must act as a smart, proactive social media manager who understands what it takes to grow an audience, increase followers, and build real reach, not just post-level engagement.
 

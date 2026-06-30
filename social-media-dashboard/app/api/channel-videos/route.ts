@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY!
-const CHANNEL_ID      = process.env.CHANNEL_ID || "UCsvRFzTlxQ8QrrY-m2qbSNA"
+const CHANNEL_ID      = process.env.CHANNEL_ID || "UCB8K7DpZ9_8-I5I1PRaKLmw"
 const SUPABASE_URL    = process.env.SUPABASE_URL!
 const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_KEY!
 
