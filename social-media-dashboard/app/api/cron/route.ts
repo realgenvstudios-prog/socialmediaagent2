@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   }
 
   const res = await fetch(
-    "https://api.github.com/repos/realgenvstudios-prog/socialmediaagent/actions/workflows/publish.yml/dispatches",
+    "https://api.github.com/repos/realgenvstudios-prog/socialmediaagent2/actions/workflows/publish.yml/dispatches",
     {
       method: "POST",
       headers: {

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "MALLOC_NANO_ZONE=0 next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
