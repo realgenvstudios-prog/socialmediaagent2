@@ -13,16 +13,21 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     setError("")
-    const res = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    })
-    if (res.ok) {
-      router.push("/")
-      router.refresh()
-    } else {
-      setError("Incorrect password")
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      })
+      if (res.ok) {
+        router.push("/")
+        router.refresh()
+      } else {
+        setError("Incorrect password")
+        setLoading(false)
+      }
+    } catch {
+      setError("Network error — please try again")
       setLoading(false)
     }
   }
