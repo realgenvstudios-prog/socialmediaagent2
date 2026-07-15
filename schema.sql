@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS clip_selection_log (
     performance_tier TEXT,
     views INTEGER,
     clip_transcript TEXT,
+    selected_at TIMESTAMPTZ,
     analytics_updated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(video_id, clip_index)
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS clip_selection_log (
 
 CREATE TABLE IF NOT EXISTS channel_intelligence (
     id TEXT PRIMARY KEY,
+    summary TEXT,
     stats JSONB,
     updated_at TIMESTAMPTZ
 );
@@ -71,14 +73,20 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE TABLE IF NOT EXISTS clip_performance (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    clip_queue_id UUID,
     video_id TEXT,
     clip_index INTEGER,
     platform TEXT,
     zernio_post_id TEXT,
-    hook TEXT,
+    hours_since_posted INTEGER,
     views INTEGER DEFAULT 0,
+    impressions INTEGER DEFAULT 0,
+    reach INTEGER DEFAULT 0,
     likes INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
     shares INTEGER DEFAULT 0,
-    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    saves INTEGER DEFAULT 0,
+    clicks INTEGER DEFAULT 0,
+    engagement_rate FLOAT,
+    measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

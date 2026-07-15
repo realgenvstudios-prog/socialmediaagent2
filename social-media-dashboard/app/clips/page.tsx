@@ -1,33 +1,65 @@
-import { supabase } from "@/lib/supabase"
+import sql from "@/lib/db"
 import Link from "next/link"
 import AnalyzeVideoForm from "@/components/AnalyzeVideoForm"
 
 export const revalidate = 60
 
-async function getClips() {
-  const { data } = await supabase
-    .from("clips")
-    .select(`id, clip_index, caption, duration_seconds, created_at,
-      videos(title, thumbnail_url),
-      posts(platform, status)`)
-    .order("created_at", { ascending: false })
-    .limit(60)
-  return data ?? []
+const PLATFORMS = ["instagram", "tiktok", "youtube", "facebook"] as const
+
+const platformLabel: Record<string, string> = {
+  instagram: "IG",
+  tiktok:    "TT",
+  youtube:   "YT",
+  facebook:  "FB",
 }
 
-const PLATFORMS = ["tiktok", "youtube", "facebook"] as const
+const platformColor: Record<string, string> = {
+  instagram: "#e1306c",
+  tiktok:    "#111111",
+  youtube:   "#ff0000",
+  facebook:  "#1877f2",
+}
 
-const platformLabel: Record<string, string> = { tiktok: "TT", youtube: "YT", facebook: "FB" }
-const platformPosted: Record<string, string>  = {
-  tiktok:   "bg-pink-500  text-white",
-  youtube:  "bg-red-500   text-white",
-  facebook: "bg-blue-600  text-white",
+async function getClips() {
+  // One representative row per (video_id, clip_index), preferring 'posted' status
+  const rows = await sql.unsafe(`
+    SELECT sq.id, sq.video_id, sq.clip_index, sq.caption, sq.public_url,
+           sq.created_at, sq.status, pv.video_title
+    FROM (
+      SELECT DISTINCT ON (video_id, clip_index)
+        id, video_id, clip_index, caption, public_url, created_at, status
+      FROM clip_queue
+      WHERE clip_index < 50
+      ORDER BY video_id, clip_index, status DESC
+    ) sq
+    LEFT JOIN processed_videos pv ON pv.video_id = sq.video_id
+    ORDER BY sq.created_at DESC
+    LIMIT 60
+  `, [])
+
+  const platformRows = await sql.unsafe(`
+    SELECT video_id, clip_index, platform, status
+    FROM clip_queue
+    WHERE clip_index < 50
+  `, [])
+
+  const statusMap = new Map<string, Record<string, string>>()
+  for (const r of platformRows as any[]) {
+    const key = `${r.video_id}-${r.clip_index}`
+    if (!statusMap.has(key)) statusMap.set(key, {})
+    statusMap.get(key)![r.platform] = r.status
+  }
+
+  return (rows as any[]).map(r => ({
+    ...r,
+    platforms: statusMap.get(`${r.video_id}-${r.clip_index}`) ?? {},
+  }))
 }
 
 export default async function ClipsPage() {
   const clips = await getClips()
-  const fullyPosted = clips.filter((c: any) =>
-    PLATFORMS.every(p => (c.posts ?? []).some((post: any) => post.platform === p && post.status === "posted"))
+  const fullyPosted = clips.filter(c =>
+    PLATFORMS.every(p => c.platforms[p] === "posted")
   ).length
 
   return (
@@ -37,7 +69,9 @@ export default async function ClipsPage() {
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Clips</h1>
-          <p className="text-sm text-gray-500 mt-1">{clips.length} clips · {fullyPosted} fully posted</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {clips.length} clips · {fullyPosted} fully posted
+          </p>
         </div>
         <AnalyzeVideoForm />
       </div>
@@ -51,8 +85,8 @@ export default async function ClipsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {clips.map((clip: any) => {
-            const posts: any[] = clip.posts ?? []
-            const allPosted = PLATFORMS.every(p => posts.some((post: any) => post.platform === p && post.status === "posted"))
+            const platforms = clip.platforms as Record<string, string>
+            const allPosted = PLATFORMS.every(p => platforms[p] === "posted")
 
             return (
               <Link
@@ -62,18 +96,11 @@ export default async function ClipsPage() {
               >
                 {/* Thumbnail */}
                 <div className="relative h-40 bg-gray-100 overflow-hidden">
-                  {clip.videos?.thumbnail_url ? (
-                    <img
-                      src={clip.videos.thumbnail_url}
-                      alt=""
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-3xl text-gray-300">🎬</div>
-                  )}
-                  <div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs font-mono px-1.5 py-0.5 rounded">
-                    {clip.duration_seconds?.toFixed(0)}s
-                  </div>
+                  <img
+                    src={`https://img.youtube.com/vi/${clip.video_id}/hqdefault.jpg`}
+                    alt=""
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                  />
                   {allPosted && (
                     <div className="absolute top-2 left-2 bg-emerald-500 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
                       ✓ Posted
@@ -84,7 +111,7 @@ export default async function ClipsPage() {
                 {/* Body */}
                 <div className="p-4">
                   <p className="text-xs text-gray-400 truncate mb-1">
-                    {clip.videos?.title ?? "-"} · Clip {clip.clip_index}
+                    {clip.video_title ?? clip.video_id} · Clip {clip.clip_index}
                   </p>
                   <p className="text-sm text-gray-800 line-clamp-2 leading-relaxed min-h-[2.5rem]">
                     {clip.caption || <span className="text-gray-300 italic">No caption</span>}
@@ -93,17 +120,17 @@ export default async function ClipsPage() {
                   {/* Platform status row */}
                   <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-1.5">
                     {PLATFORMS.map((platform) => {
-                      const post = posts.find((p: any) => p.platform === platform)
-                      const posted = post?.status === "posted"
-                      const failed  = post?.status === "failed"
+                      const pStatus = platforms[platform]
+                      const posted = pStatus === "posted"
+                      const failed = pStatus === "failed"
                       return (
                         <span
                           key={platform}
-                          className={`text-xs font-bold px-2 py-0.5 rounded transition-colors ${
-                            failed  ? "bg-red-100 text-red-500" :
-                            posted  ? platformPosted[platform] :
-                            "bg-gray-100 text-gray-400"
-                          }`}
+                          className="text-xs font-bold px-2 py-0.5 rounded transition-colors"
+                          style={{
+                            color: posted ? platformColor[platform] : failed ? "#dc2626" : "#9ca3af",
+                            background: posted ? `${platformColor[platform]}15` : "transparent",
+                          }}
                         >
                           {platformLabel[platform]}
                         </span>

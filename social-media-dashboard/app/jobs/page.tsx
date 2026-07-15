@@ -1,53 +1,40 @@
-import { supabase } from "@/lib/supabase"
+import sql from "@/lib/db"
 
 export const revalidate = 30
 
-async function getJobs() {
-  const { data } = await supabase
-    .from("jobs")
-    .select("id, job_type, status, error, created_at, videos(title)")
-    .order("created_at", { ascending: false })
-    .limit(60)
-  return data ?? []
+async function getEpisodes() {
+  const rows = await sql`
+    SELECT pv.video_id, pv.video_title, pv.clip_count, pv.processed_at,
+           COUNT(cq.id)                                                    AS total_clips,
+           COUNT(cq.id) FILTER (WHERE cq.status = 'posted')               AS posted_clips,
+           COUNT(cq.id) FILTER (WHERE cq.status = 'pending')              AS pending_clips,
+           COUNT(cq.id) FILTER (WHERE cq.status = 'failed')               AS failed_clips
+    FROM processed_videos pv
+    LEFT JOIN clip_queue cq ON cq.video_id = pv.video_id AND cq.clip_index < 50
+    GROUP BY pv.video_id, pv.video_title, pv.clip_count, pv.processed_at
+    ORDER BY pv.processed_at DESC
+    LIMIT 60
+  `
+  return rows as any[]
 }
 
-const statusBadge: Record<string, string> = {
-  pending: "bg-amber-50   text-amber-700  ring-1 ring-amber-200",
-  running: "bg-blue-50    text-blue-700   ring-1 ring-blue-200",
-  done:    "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
-  failed:  "bg-red-50     text-red-700    ring-1 ring-red-200",
-}
-
-const jobTypeBadge: Record<string, string> = {
-  clip:   "bg-violet-50 text-violet-700 ring-1 ring-violet-200",
-  post_a: "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200",
-  post_b: "bg-sky-50    text-sky-700    ring-1 ring-sky-200",
+function timeAgo(iso: string) {
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
 }
 
 export default async function JobsPage() {
-  const jobs = await getJobs()
-
-  const counts = jobs.reduce((acc: Record<string, number>, j: any) => {
-    acc[j.status] = (acc[j.status] ?? 0) + 1
-    return acc
-  }, {})
+  const episodes = await getEpisodes()
 
   return (
     <div className="space-y-6">
 
       {/* Header */}
-      <div className="flex items-end justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Jobs</h1>
-          <p className="text-sm text-gray-500 mt-1">Pipeline job queue · {jobs.length} total</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          {Object.entries(counts).map(([status, count]) => (
-            <span key={status} className={`text-xs font-semibold px-2.5 py-1 rounded-full capitalize ${statusBadge[status] ?? "bg-gray-100 text-gray-600"}`}>
-              {count} {status}
-            </span>
-          ))}
-        </div>
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">Pipeline History</h1>
+        <p className="text-sm text-gray-500 mt-1">Episodes processed by the agent · {episodes.length} total</p>
       </div>
 
       {/* Table */}
@@ -55,48 +42,76 @@ export default async function JobsPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-gray-100 bg-gray-50">
+              <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Episode</th>
+              <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Clips</th>
               <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Status</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Type</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Video</th>
-              <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Error</th>
-              <th className="text-right px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Date</th>
+              <th className="text-right px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">Processed</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
-            {jobs.length === 0 ? (
+            {episodes.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-5 py-16 text-center">
+                <td colSpan={4} className="px-5 py-16 text-center">
                   <div className="w-10 h-10 bg-gray-100 rounded-xl mx-auto mb-3 flex items-center justify-center text-xl">⚙️</div>
-                  <p className="text-sm font-medium text-gray-700">No jobs yet</p>
-                  <p className="text-xs text-gray-400 mt-1">Jobs appear here as the pipeline runs.</p>
+                  <p className="text-sm font-medium text-gray-700">No episodes processed yet</p>
+                  <p className="text-xs text-gray-400 mt-1">Episodes appear here after the pipeline runs on a new video.</p>
                 </td>
               </tr>
-            ) : jobs.map((job: any) => (
-              <tr key={job.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-5 py-3.5">
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full capitalize ${statusBadge[job.status] ?? "bg-gray-100 text-gray-600"}`}>
-                    {job.status}
-                  </span>
-                </td>
-                <td className="px-5 py-3.5">
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full font-mono ${jobTypeBadge[job.job_type] ?? "bg-gray-100 text-gray-600"}`}>
-                    {job.job_type}
-                  </span>
-                </td>
-                <td className="px-5 py-3.5 max-w-xs">
-                  <p className="text-gray-800 font-medium truncate">{(job as any).videos?.title ?? <span className="text-gray-300">-</span>}</p>
-                </td>
-                <td className="px-5 py-3.5 max-w-xs">
-                  {job.error
-                    ? <p className="text-xs text-red-500 truncate">{job.error}</p>
-                    : <span className="text-gray-300">-</span>
-                  }
-                </td>
-                <td className="px-5 py-3.5 text-right text-xs text-gray-400 tabular-nums whitespace-nowrap">
-                  {new Date(job.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
-                </td>
-              </tr>
-            ))}
+            ) : episodes.map((ep: any) => {
+              const posted  = Number(ep.posted_clips)
+              const pending = Number(ep.pending_clips)
+              const failed  = Number(ep.failed_clips)
+              const total   = Number(ep.total_clips)
+              const allDone = total > 0 && posted === total
+              const hasFail = failed > 0
+
+              return (
+                <tr key={ep.video_id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-5 py-3.5 max-w-xs">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-7 rounded overflow-hidden bg-gray-100 shrink-0">
+                        <img
+                          src={`https://img.youtube.com/vi/${ep.video_id}/default.jpg`}
+                          alt=""
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <p className="text-gray-800 font-medium truncate max-w-[240px]">
+                        {ep.video_title ?? ep.video_id}
+                      </p>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5 text-gray-600 tabular-nums">
+                    {total}
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {posted > 0 && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+                          {posted} posted
+                        </span>
+                      )}
+                      {pending > 0 && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+                          {pending} pending
+                        </span>
+                      )}
+                      {failed > 0 && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-50 text-red-700 ring-1 ring-red-200">
+                          {failed} failed
+                        </span>
+                      )}
+                      {total === 0 && (
+                        <span className="text-xs text-gray-400">No clips queued</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5 text-right text-xs text-gray-400 tabular-nums whitespace-nowrap">
+                    {timeAgo(ep.processed_at)}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

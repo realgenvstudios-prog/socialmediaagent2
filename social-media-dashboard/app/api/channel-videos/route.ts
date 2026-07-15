@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import sql from "@/lib/db"
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY!
 const CHANNEL_ID      = process.env.CHANNEL_ID || "UCB8K7DpZ9_8-I5I1PRaKLmw"
-const SUPABASE_URL    = process.env.SUPABASE_URL!
-const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_KEY!
 
 export const revalidate = 0
 
@@ -50,7 +48,6 @@ async function fetchAllVideoIds(): Promise<{ videoId: string; title: string; thu
 
 async function fetchDurations(videoIds: string[]): Promise<Record<string, string>> {
   const durations: Record<string, string> = {}
-  // videos.list accepts up to 50 IDs per call
   for (let i = 0; i < videoIds.length; i += 50) {
     const batch = videoIds.slice(i, i + 50)
     const params = new URLSearchParams({
@@ -70,17 +67,15 @@ async function fetchDurations(videoIds: string[]): Promise<Record<string, string
 }
 
 export async function GET() {
-  const sb = createClient(SUPABASE_URL, SUPABASE_KEY)
-
-  const [rawVideos, { data: processed }] = await Promise.all([
+  const [rawVideos, processed] = await Promise.all([
     fetchAllVideoIds(),
-    sb.from("processed_videos").select("video_id, clip_count, processed_at, video_title"),
+    sql`SELECT video_id, clip_count, processed_at, video_title FROM processed_videos`,
   ])
 
   const durations = await fetchDurations(rawVideos.map(v => v.videoId))
 
   const processedMap = Object.fromEntries(
-    (processed ?? []).map((p: any) => [p.video_id, p])
+    processed.map((p: any) => [p.video_id, p])
   )
 
   const seen = new Set<string>()

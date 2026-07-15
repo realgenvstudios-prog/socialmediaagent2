@@ -10,14 +10,12 @@ import re
 import sys
 import requests
 from dotenv import load_dotenv
-from supabase import create_client
+from db import create_client
 
 load_dotenv(override=True)
 
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ["SUPABASE_KEY"]
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_OWNER = os.environ.get("GITHUB_OWNER")
 GITHUB_REPO  = os.environ.get("GITHUB_REPO")
@@ -201,7 +199,7 @@ def trigger_workflow(video):
 
 
 def main():
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = create_client()
 
     print("Checking for new Afropolitan videos (long-form only)...")
     videos = get_recent_long_videos(max_results=5)

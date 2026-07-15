@@ -14,7 +14,7 @@ import argparse
 import tempfile
 
 from dotenv import load_dotenv
-from supabase import create_client
+from db import create_client
 import anthropic
 
 load_dotenv(override=True)
@@ -25,8 +25,6 @@ spec = importlib.util.spec_from_file_location("pv", os.path.join(os.path.dirname
 pv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pv)
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 
@@ -37,7 +35,7 @@ def main():
     parser.add_argument("--title", required=True)
     args = parser.parse_args()
 
-    supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    supabase_admin = create_client()
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     # Find which clip indices are still pending

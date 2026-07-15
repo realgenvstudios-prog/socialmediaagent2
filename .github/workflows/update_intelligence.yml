@@ -18,17 +18,23 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install anthropic supabase requests python-dotenv
+        run: pip install anthropic psycopg2-binary boto3 requests python-dotenv
 
       - name: Run intelligence update
         run: python scripts/update_intelligence.py
         env:
           ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
-          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:           ${{ secrets.SUPABASE_KEY }}
-          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATABASE_URL:           ${{ secrets.DATABASE_URL }}
+          R2_ACCOUNT_ID:          ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID:       ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY:   ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL:          ${{ secrets.R2_PUBLIC_URL }}
           ZERNIO_API_KEY:         ${{ secrets.ZERNIO_API_KEY }}
           ZERNIO_API_KEY_2:       ${{ secrets.ZERNIO_API_KEY_2 }}
           YOUTUBE_CLIENT_ID:      ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET:  ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN:  ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+
+      - name: Log failure
+        if: failure()
+        run: echo "Workflow update_intelligence failed. Run ${{ github.run_id }}"
