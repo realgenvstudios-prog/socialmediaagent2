@@ -104,6 +104,34 @@ CREATE TABLE IF NOT EXISTS meta_account_daily (
     UNIQUE(platform, date)
 );
 
+CREATE TABLE IF NOT EXISTS youtube_channel_daily (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    date DATE NOT NULL DEFAULT CURRENT_DATE UNIQUE,
+    subscribers INTEGER DEFAULT 0,
+    subscribers_gained INTEGER DEFAULT 0,
+    subscribers_lost INTEGER DEFAULT 0,
+    views INTEGER DEFAULT 0,
+    watch_minutes INTEGER DEFAULT 0,
+    avg_view_duration_s INTEGER DEFAULT 0,
+    avg_view_percentage FLOAT DEFAULT 0,
+    traffic_sources JSONB
+);
+
+CREATE TABLE IF NOT EXISTS youtube_video_stats (
+    video_id TEXT NOT NULL,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    title TEXT,
+    views INTEGER DEFAULT 0,
+    likes INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0,
+    shares INTEGER DEFAULT 0,
+    watch_minutes INTEGER DEFAULT 0,
+    avg_view_duration_s INTEGER DEFAULT 0,
+    avg_view_percentage FLOAT DEFAULT 0,
+    fetched_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (video_id, date)
+);
+
 CREATE TABLE IF NOT EXISTS clip_performance (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     clip_queue_id UUID,

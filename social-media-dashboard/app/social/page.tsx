@@ -8,6 +8,22 @@ type Platform = (typeof PLATFORMS)[number]
 const PLATFORM_COLOR: Record<string, string> = {
   instagram: "#e1306c",
   facebook:  "#1877f2",
+  youtube:   "#ff0000",
+}
+
+const TRAFFIC_LABEL: Record<string, string> = {
+  SEARCH:            "Search",
+  BROWSE_FEATURES:   "Browse",
+  RELATED_VIDEO:     "Suggested",
+  EXT_URL:           "External",
+  NO_LINK_EMBEDDED:  "Embedded",
+  SHORTS:            "Shorts",
+  SUBSCRIBER:        "Subscribers",
+  PLAYLIST:          "Playlists",
+  YT_CHANNEL:        "Channel page",
+  NOTIFICATION:      "Notifications",
+  NO_LINK_OTHER:     "Direct",
+  ADVERTISING:       "Ads",
 }
 
 function fmt(n: number) {
@@ -19,6 +35,12 @@ function fmt(n: number) {
 function fmtMs(ms: number) {
   if (!ms) return "—"
   const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  return `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
+function fmtSec(s: number) {
+  if (!s) return "—"
   if (s < 60) return `${s}s`
   return `${Math.floor(s / 60)}m ${s % 60}s`
 }
@@ -60,6 +82,31 @@ type AccountRow = {
   total_interactions: number
   website_clicks: number
   prev_followers: number | null
+}
+
+type YoutubeChannel = {
+  date: string
+  subscribers: number
+  subscribers_gained: number
+  subscribers_lost: number
+  views: number
+  watch_minutes: number
+  avg_view_duration_s: number
+  avg_view_percentage: number
+  traffic_sources: Record<string, number> | null
+}
+
+type YoutubeVideo = {
+  video_id: string
+  date: string
+  title: string | null
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  watch_minutes: number
+  avg_view_duration_s: number
+  avg_view_percentage: number
 }
 
 async function getData(platform: Platform) {
@@ -116,6 +163,32 @@ async function getData(platform: Platform) {
   }
 }
 
+async function getYoutubeData() {
+  const [channelRaw, videosRaw] = await Promise.all([
+    sql.unsafe(
+      `SELECT date, subscribers, subscribers_gained, subscribers_lost,
+              views, watch_minutes, avg_view_duration_s, avg_view_percentage,
+              traffic_sources
+       FROM youtube_channel_daily
+       ORDER BY date DESC LIMIT 1`,
+      []
+    ),
+    sql.unsafe(
+      `SELECT video_id, date, title, views, likes, comments, shares,
+              watch_minutes, avg_view_duration_s, avg_view_percentage
+       FROM youtube_video_stats
+       WHERE date = (SELECT MAX(date) FROM youtube_video_stats)
+       ORDER BY views DESC LIMIT 25`,
+      []
+    ),
+  ])
+
+  return {
+    channel: (channelRaw as unknown as YoutubeChannel[])[0] ?? null,
+    videos:  videosRaw as unknown as YoutubeVideo[],
+  }
+}
+
 export default async function SocialPage({
   searchParams,
 }: {
@@ -136,11 +209,16 @@ export default async function SocialPage({
   let totals: Record<string, number> = {}
   let hasData = true
 
+  let ytChannel: YoutubeChannel | null = null
+  let ytVideos: YoutubeVideo[] = []
+
   try {
-    const d = await getData(activePlatform)
-    posts   = d.posts
-    account = d.account
-    totals  = d.totals
+    const [d, yt] = await Promise.all([getData(activePlatform), getYoutubeData()])
+    posts      = d.posts
+    account    = d.account
+    totals     = d.totals
+    ytChannel  = yt.channel
+    ytVideos   = yt.videos
   } catch {
     hasData = false
   }
@@ -155,7 +233,7 @@ export default async function SocialPage({
           Social Analytics
         </h1>
         <p style={{ fontSize: "13px", color: "var(--muted)" }}>
-          Live data from Meta Graph API · Instagram &amp; Facebook Reels
+          Meta Graph API · YouTube Analytics API
         </p>
       </div>
 
@@ -167,6 +245,146 @@ export default async function SocialPage({
         </div>
       ) : (
         <>
+          {/* ── YouTube Section ─────────────────────────────────────── */}
+          {ytChannel && (
+            <div style={{ marginBottom: "3rem" }}>
+              <div style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: PLATFORM_COLOR.youtube, marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: PLATFORM_COLOR.youtube }} />
+                YouTube Channel · Last 30 Days
+              </div>
+
+              {/* Channel stats grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1px", background: "var(--border)", border: "1px solid var(--border)", marginBottom: "1px" }}>
+                {[
+                  { label: "Subscribers",      value: fmt(ytChannel.subscribers),
+                    sub: ytChannel.subscribers_gained > 0 ? `+${fmt(ytChannel.subscribers_gained)} gained` : null,
+                    subColor: "var(--green)" },
+                  { label: "Views (30d)",       value: fmt(ytChannel.views),           sub: null, subColor: "" },
+                  { label: "Watch Hours (30d)", value: fmt(Math.round(ytChannel.watch_minutes / 60)), sub: `${fmt(ytChannel.watch_minutes)} minutes`, subColor: "var(--faint)" },
+                  { label: "Avg View Duration", value: fmtSec(ytChannel.avg_view_duration_s), sub: null, subColor: "" },
+                  { label: "Avg View %",        value: `${ytChannel.avg_view_percentage.toFixed(1)}%`, sub: null, subColor: "" },
+                  { label: "Subs Lost (30d)",   value: fmt(ytChannel.subscribers_lost), sub: null, subColor: "" },
+                ].map(s => (
+                  <div key={s.label} style={{ background: "var(--bg)", padding: "1.25rem 1.5rem" }}>
+                    <div style={{ fontSize: "1.5rem", fontWeight: 200, letterSpacing: "-0.04em", color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+                      {s.value}
+                    </div>
+                    <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--faint)", marginTop: "4px" }}>
+                      {s.label}
+                    </div>
+                    {s.sub && (
+                      <div style={{ fontSize: "11px", color: s.subColor, marginTop: "3px" }}>
+                        {s.sub}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Traffic sources */}
+              {ytChannel.traffic_sources && Object.keys(ytChannel.traffic_sources).length > 0 && (() => {
+                const sources = Object.entries(ytChannel.traffic_sources!)
+                  .sort(([, a], [, b]) => b - a)
+                  .slice(0, 6)
+                const total = sources.reduce((s, [, v]) => s + v, 0)
+                return (
+                  <div style={{ border: "1px solid var(--border)", borderTop: "none", padding: "1.25rem 1.5rem", background: "var(--bg)", marginBottom: "1.5rem" }}>
+                    <div style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "1rem" }}>
+                      Traffic Sources
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {sources.map(([key, views]) => {
+                        const pct = total > 0 ? (views / total) * 100 : 0
+                        return (
+                          <div key={key}>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                              <span style={{ fontSize: "12px", color: "var(--text)" }}>
+                                {TRAFFIC_LABEL[key] ?? key}
+                              </span>
+                              <span style={{ fontSize: "12px", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+                                {fmt(views)} · {pct.toFixed(1)}%
+                              </span>
+                            </div>
+                            <div style={{ height: "3px", background: "var(--border)", borderRadius: "2px" }}>
+                              <div style={{ height: "100%", width: `${pct}%`, background: PLATFORM_COLOR.youtube, borderRadius: "2px", transition: "width 0.3s" }} />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Top YouTube videos */}
+              {ytVideos.length > 0 && (
+                <div>
+                  <div style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "0.5rem" }}>
+                    Top Videos · {ytVideos[0]?.date ? new Date(ytVideos[0].date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "recent"}
+                  </div>
+                  <div style={{ borderTop: "1px solid var(--border)" }}>
+                    {ytVideos.map((v, i) => (
+                      <div key={v.video_id} style={{
+                        borderBottom: "1px solid var(--border)", padding: "1rem 0",
+                        display: "grid", gridTemplateColumns: "20px 64px 1fr auto", gap: "14px", alignItems: "center",
+                      }}>
+                        <div style={{ fontSize: "11px", color: "var(--faint)", fontVariantNumeric: "tabular-nums" }}>
+                          {i + 1}
+                        </div>
+                        <div style={{ width: "64px", height: "36px", overflow: "hidden", background: "var(--surface)", borderRadius: "2px", flexShrink: 0 }}>
+                          <img
+                            src={`https://i.ytimg.com/vi/${v.video_id}/mqdefault.jpg`}
+                            alt=""
+                            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                          />
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{
+                            fontSize: "12px", color: "var(--text)", marginBottom: "6px",
+                            overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis",
+                          }}>
+                            {v.title ?? v.video_id}
+                          </div>
+                          <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
+                            {[
+                              { label: "views",   value: fmt(v.views),      show: v.views > 0 },
+                              { label: "likes",   value: fmt(v.likes),      show: v.likes > 0 },
+                              { label: "comments",value: fmt(v.comments),   show: v.comments > 0 },
+                              { label: "shares",  value: fmt(v.shares),     show: v.shares > 0 },
+                              { label: "watch",   value: `${fmt(v.watch_minutes)}m`, show: v.watch_minutes > 0 },
+                              { label: "avg view",value: `${v.avg_view_percentage.toFixed(1)}%`, show: v.avg_view_percentage > 0 },
+                            ].filter(s => s.show).map(s => (
+                              <div key={s.label} style={{ display: "flex", gap: "3px", alignItems: "baseline" }}>
+                                <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>{s.value}</span>
+                                <span style={{ fontSize: "10px", color: "var(--faint)" }}>{s.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <a
+                          href={`https://www.youtube.com/watch?v=${v.video_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: "11px", color: "var(--muted)", textDecoration: "none", borderBottom: "1px solid var(--border)", flexShrink: 0 }}
+                        >
+                          View ↗
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Divider ─────────────────────────────────────────────── */}
+          <div style={{ borderTop: "1px solid var(--border)", marginBottom: "2.5rem", paddingTop: "2.5rem" }}>
+            <div style={{ fontSize: "10px", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--faint)", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#e1306c" }} />
+              Meta · Instagram &amp; Facebook
+            </div>
+          </div>
+
           {/* Account snapshot — Instagram only */}
           {activePlatform !== "facebook" && (() => {
             const newFollowers = account.prev_followers != null
@@ -276,12 +494,10 @@ export default async function SocialPage({
                     borderBottom: "1px solid var(--border)", padding: "1.25rem 0",
                     display: "grid", gridTemplateColumns: "20px auto 1fr auto", gap: "14px", alignItems: "start",
                   }}>
-                    {/* Rank */}
                     <div style={{ fontSize: "11px", color: "var(--faint)", fontVariantNumeric: "tabular-nums", paddingTop: "2px" }}>
                       {rank}
                     </div>
 
-                    {/* Thumbnail */}
                     <div style={{ width: "36px", height: "64px", overflow: "hidden", background: "var(--surface)", flexShrink: 0, borderRadius: "2px" }}>
                       {post.video_id ? (
                         <img
@@ -298,7 +514,6 @@ export default async function SocialPage({
                       )}
                     </div>
 
-                    {/* Caption + metrics */}
                     <div style={{ minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
                         <span style={{ fontSize: "10px", fontWeight: 600, color, textTransform: "capitalize", letterSpacing: "0.04em" }}>
@@ -340,7 +555,6 @@ export default async function SocialPage({
                       </div>
                     </div>
 
-                    {/* Engagement rate + link */}
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       {engagementRate && (
                         <>

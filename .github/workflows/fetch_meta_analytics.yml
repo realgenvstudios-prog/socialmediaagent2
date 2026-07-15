@@ -1,4 +1,4 @@
-name: Fetch Meta Analytics
+name: Fetch Social Analytics
 
 on:
   schedule:
@@ -18,8 +18,16 @@ jobs:
       - name: Install dependencies
         run: pip install requests psycopg2-binary python-dotenv
 
-      - name: Fetch Meta analytics
+      - name: Fetch Meta (Instagram + Facebook) analytics
         env:
           DATABASE_URL:      ${{ secrets.DATABASE_URL }}
           META_PAGE_TOKEN:   ${{ secrets.META_PAGE_TOKEN }}
         run: python scripts/fetch_meta_analytics.py
+
+      - name: Fetch YouTube analytics
+        env:
+          DATABASE_URL:          ${{ secrets.DATABASE_URL }}
+          YOUTUBE_CLIENT_ID:     ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: python scripts/fetch_youtube_analytics.py
