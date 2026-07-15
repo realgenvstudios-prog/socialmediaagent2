@@ -1013,6 +1013,14 @@ def main():
 
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+    # Guard: never process the same video twice
+    already_done = supabase_admin.table("processed_videos") \
+        .select("id").eq("video_id", args.video_id).execute()
+    if already_done.data:
+        print(f"\n[SKIP] {args.video_id} is already in processed_videos — aborting to avoid duplicate work.")
+        print("  If you really want to reprocess it, delete the row from processed_videos first.")
+        return
+
     os.makedirs("transcripts", exist_ok=True)
     transcript_cache = f"transcripts/{args.video_id}.json"
 
