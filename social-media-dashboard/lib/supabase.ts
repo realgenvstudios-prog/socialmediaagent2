@@ -1,9 +1,8 @@
 import sql from "./db"
 
-type Row = Record<string, unknown>
-
-interface QueryResult<T = Row> {
-  data: T[] | T | null
+interface QueryResult {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any
   error: null
   count: number | null
 }
@@ -16,7 +15,7 @@ interface Cond {
   val: unknown
 }
 
-class Query<T = Row> implements PromiseLike<QueryResult<T>> {
+class Query implements PromiseLike<QueryResult> {
   private _table: string
   private _cols = "*"
   private _conds: Cond[] = []
@@ -89,14 +88,14 @@ class Query<T = Row> implements PromiseLike<QueryResult<T>> {
     return this
   }
 
-  then<TRes1 = QueryResult<T>, TRes2 = never>(
-    onfulfilled?: ((v: QueryResult<T>) => TRes1 | PromiseLike<TRes1>) | null,
+  then<TRes1 = QueryResult, TRes2 = never>(
+    onfulfilled?: ((v: QueryResult) => TRes1 | PromiseLike<TRes1>) | null,
     onrejected?: ((r: unknown) => TRes2 | PromiseLike<TRes2>) | null,
   ): Promise<TRes1 | TRes2> {
     return this._run().then(onfulfilled, onrejected)
   }
 
-  private async _run(): Promise<QueryResult<T>> {
+  private async _run(): Promise<QueryResult> {
     const params: unknown[] = []
     const wheres: string[] = []
     const opMap: Record<string, string> = { eq: "=", neq: "!=", gte: ">=", lt: "<" }
@@ -127,7 +126,7 @@ class Query<T = Row> implements PromiseLike<QueryResult<T>> {
     if (this._lim !== null) q += ` LIMIT ${this._lim}`
     if (this._offset !== null) q += ` OFFSET ${this._offset}`
 
-    const rows = (await sql.unsafe(q, params as never[])) as T[]
+    const rows = (await sql.unsafe(q, params as never[])) as any[]
 
     if (this._isSingle) return { data: rows[0] ?? null, error: null, count: null }
     return { data: rows, error: null, count: null }
@@ -135,7 +134,7 @@ class Query<T = Row> implements PromiseLike<QueryResult<T>> {
 }
 
 class SupabaseCompat {
-  from(table: string) {
+  from(table: string): Query {
     return new Query(table)
   }
 }
