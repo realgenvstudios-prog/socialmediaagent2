@@ -71,6 +71,39 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS meta_posts (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    caption TEXT,
+    permalink TEXT,
+    published_at TIMESTAMPTZ,
+    video_id TEXT,
+    clip_index INTEGER,
+    views INTEGER DEFAULT 0,
+    reach INTEGER DEFAULT 0,
+    likes INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0,
+    shares INTEGER DEFAULT 0,
+    saves INTEGER DEFAULT 0,
+    avg_watch_time_ms INTEGER DEFAULT 0,
+    total_watch_time_ms BIGINT DEFAULT 0,
+    fetched_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS meta_account_daily (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    platform TEXT NOT NULL,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    followers INTEGER DEFAULT 0,
+    media_count INTEGER DEFAULT 0,
+    reach INTEGER DEFAULT 0,
+    profile_views INTEGER DEFAULT 0,
+    accounts_engaged INTEGER DEFAULT 0,
+    total_interactions INTEGER DEFAULT 0,
+    website_clicks INTEGER DEFAULT 0,
+    UNIQUE(platform, date)
+);
+
 CREATE TABLE IF NOT EXISTS clip_performance (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     clip_queue_id UUID,

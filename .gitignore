@@ -12,3 +12,5 @@ venv/
 scripts/trigger_post.sh
 *cookies*.txt
 config.json
+client_secret_*.json
+logo.png
