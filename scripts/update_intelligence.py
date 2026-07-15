@@ -930,7 +930,62 @@ Be specific, data-driven, and opinionated. Reference real numbers and real hook 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def _should_skip() -> bool:
+    """
+    Early exit check: two cheap DB queries, no Zernio or Claude calls.
+    Returns True if the existing brief is recent enough and not enough new
+    clips have been posted to justify regenerating it.
+    """
+    try:
+        count_resp = (
+            sb.table("clip_queue")
+            .select("id", count="exact")
+            .eq("status", "posted")
+            .not_.is_("zernio_post_id", "null")
+            .execute()
+        )
+        current_clip_count = count_resp.count or 0
+
+        existing = (
+            sb.table("channel_intelligence")
+            .select("stats,updated_at")
+            .eq("id", "singleton")
+            .maybe_single()
+            .execute()
+        )
+        if not existing.data:
+            return False  # no brief exists yet — always generate
+
+        prev_count = (existing.data.get("stats") or {}).get("clips_analysed", 0)
+        updated_at = existing.data.get("updated_at", "")
+        if not updated_at:
+            return False
+
+        age_h = (
+            datetime.now(timezone.utc)
+            - datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        ).total_seconds() / 3600
+        new_clips = current_clip_count - prev_count
+
+        if age_h < 20:
+            print(f"  Brief updated {age_h:.0f}h ago — too recent. Skipping all API calls.")
+            return True
+        if age_h < 48 and new_clips < 15:
+            print(f"  Brief is {age_h:.0f}h old with only {new_clips} new clips. Skipping.")
+            return True
+
+        print(f"  Brief is {age_h:.0f}h old, {new_clips} new clips — regenerating.")
+        return False
+    except Exception as e:
+        print(f"  Pre-check failed ({e}) — proceeding to be safe.")
+        return False
+
+
 def main():
+    print("Pre-check: deciding whether to regenerate intelligence brief...")
+    if _should_skip():
+        return
+
     print("Fetching analytics...")
     zernio_map = fetch_zernio_all_posts()
     print(f"  {len(zernio_map)} posts fetched.")
