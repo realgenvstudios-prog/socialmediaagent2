@@ -67,9 +67,11 @@ jobs:
           YOUTUBE_COOKIES_FILE: /tmp/yt_cookies.txt
           NO_PROXY: huggingface.co,*.huggingface.co,cdn-lfs.huggingface.co
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
           ZERNIO_API_KEY_2: ${{ secrets.ZERNIO_API_KEY_2 }}
@@ -78,14 +80,6 @@ jobs:
           YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
           FACEBOOK_ACCOUNT_ID: ${{ secrets.FACEBOOK_ACCOUNT_ID }}
 
-      - name: Log failure to Supabase
+      - name: Log failure
         if: failure()
-        run: |
-          curl -s -X POST "$SUPABASE_URL/rest/v1/pipeline_errors" \
-            -H "apikey: $SUPABASE_SERVICE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"workflow\": \"process_manual\", \"run_url\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: echo "Workflow process_manual failed. Run ${{ github.run_id }}"

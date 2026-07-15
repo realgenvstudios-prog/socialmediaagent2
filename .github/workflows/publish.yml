@@ -16,13 +16,16 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install requests python-dotenv supabase
+        run: pip install requests python-dotenv psycopg2-binary boto3
 
       - name: Post next clips
         run: python scripts/post_clips.py ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
           ZERNIO_API_KEY_2: ${{ secrets.ZERNIO_API_KEY_2 }}
           INSTAGRAM_ACCOUNT_ID: ${{ secrets.INSTAGRAM_ACCOUNT_ID }}
@@ -30,14 +33,6 @@ jobs:
           YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
           FACEBOOK_ACCOUNT_ID: ${{ secrets.FACEBOOK_ACCOUNT_ID }}
 
-      - name: Log failure to Supabase
+      - name: Log failure
         if: failure()
-        run: |
-          curl -s -X POST "$SUPABASE_URL/rest/v1/pipeline_errors" \
-            -H "apikey: $SUPABASE_SERVICE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"workflow\": \"publish\", \"run_url\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: echo "Workflow publish failed. Run ${{ github.run_id }}"

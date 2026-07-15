@@ -1,17 +1,11 @@
-import { supabase } from "@/lib/supabase"
-import { createClient } from "@supabase/supabase-js"
 import Anthropic from "@anthropic-ai/sdk"
 import PauseToggle from "@/components/PauseToggle"
 import CountdownTimer from "@/components/CountdownTimer"
 import Briefing from "@/components/Briefing"
 import AnimatedStat from "@/components/AnimatedStat"
+import sql from "@/lib/db"
 
 export const revalidate = 60
-
-const admin = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-)
 
 const PLATFORMS = ["instagram", "tiktok", "youtube", "facebook"] as const
 type Platform = (typeof PLATFORMS)[number]
@@ -123,13 +117,8 @@ async function generateBriefing(data: {
 }): Promise<string> {
   const today = new Date().toISOString().slice(0, 10)
 
-  const { data: cached } = await admin
-    .from("settings")
-    .select("value")
-    .eq("key", `briefing_${today}`)
-    .single()
-
-  if (cached?.value?.text) return cached.value.text as string
+  const cachedRows = await sql`SELECT value FROM settings WHERE key = ${"briefing_" + today} LIMIT 1`
+  if (cachedRows[0]?.value?.text) return cachedRows[0].value.text as string
 
   const platformLines = data.platformTrends
     .map(p => {
@@ -165,9 +154,9 @@ Write the briefing:`
     })
     const text = (message.content[0] as { type: string; text: string }).text.trim()
 
-    await admin
-      .from("settings")
-      .upsert({ key: `briefing_${today}`, value: { text, generated_at: new Date().toISOString() } }, { onConflict: "key" })
+    const bk = "briefing_" + today
+    const bv = JSON.stringify({ text, generated_at: new Date().toISOString() })
+    await sql`INSERT INTO settings (key, value) VALUES (${bk}, ${bv}::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
 
     return text
   } catch {
@@ -183,35 +172,29 @@ export default async function OverviewPage() {
   const [
     { totalPosted, pending, episodes, platformCounts, recentClips, last14Posts },
     zernioMap,
-    pausedRes,
+    pausedRows,
   ] = await Promise.all([
     (async () => {
       const [postedRes, pendingRes, episodesRes, platformRes, recentRes, last14Res] = await Promise.all([
-        supabase.from("clip_queue").select("id", { count: "exact", head: true }).eq("status", "posted"),
-        supabase.from("clip_queue").select("id", { count: "exact", head: true }).eq("status", "pending"),
-        supabase.from("processed_videos").select("video_id", { count: "exact", head: true }),
-        supabase.from("clip_queue").select("platform").eq("status", "posted"),
-        supabase.from("clip_queue")
-          .select("video_id, clip_index, platform, status, caption, hook, posted_at, zernio_post_id")
-          .eq("status", "posted")
-          .order("posted_at", { ascending: false })
-          .limit(60),
-        supabase.from("clip_queue")
-          .select("platform, posted_at, zernio_post_id, hook, caption, video_id, clip_index")
-          .eq("status", "posted")
-          .gte("posted_at", month)
-          .not("zernio_post_id", "is", null)
-          .order("posted_at", { ascending: false }),
+        sql`SELECT COUNT(*)::int AS cnt FROM clip_queue WHERE status = 'posted'`,
+        sql`SELECT COUNT(*)::int AS cnt FROM clip_queue WHERE status = 'pending'`,
+        sql`SELECT COUNT(*)::int AS cnt FROM processed_videos`,
+        sql`SELECT platform FROM clip_queue WHERE status = 'posted'`,
+        sql`SELECT video_id, clip_index, platform, status, caption, hook, posted_at, zernio_post_id
+            FROM clip_queue WHERE status = 'posted' ORDER BY posted_at DESC LIMIT 60`,
+        sql`SELECT platform, posted_at, zernio_post_id, hook, caption, video_id, clip_index
+            FROM clip_queue WHERE status = 'posted' AND posted_at >= ${month}
+            AND zernio_post_id IS NOT NULL ORDER BY posted_at DESC`,
       ])
 
       const platformCounts = PLATFORMS.reduce((acc, p) => ({ ...acc, [p]: 0 }), {} as Record<Platform, number>)
-      for (const row of (platformRes.data ?? [])) {
+      for (const row of platformRes) {
         if (row.platform in platformCounts) platformCounts[row.platform as Platform]++
       }
 
       type ClipEntry = { video_id: string; clip_index: number; caption: string; hook: string; posted_at: string; platforms: Record<string, string>; zernio_post_id: string | null }
       const map = new Map<string, ClipEntry>()
-      for (const row of (recentRes.data ?? [])) {
+      for (const row of recentRes) {
         if (row.clip_index > 50) continue
         const key = `${row.video_id}-${row.clip_index}`
         if (!map.has(key)) {
@@ -221,26 +204,26 @@ export default async function OverviewPage() {
       }
       const recentClips = Array.from(map.values()).slice(0, 8)
 
-      let episodeCount = episodesRes.count ?? 0
+      let episodeCount = Number(episodesRes[0]?.cnt ?? 0)
       if (episodeCount === 0) {
-        const { data: vids } = await supabase.from("clip_queue").select("video_id")
-        episodeCount = new Set((vids ?? []).map((r: { video_id: string }) => r.video_id)).size
+        const vids = await sql`SELECT DISTINCT video_id FROM clip_queue`
+        episodeCount = vids.length
       }
 
       return {
-        totalPosted: postedRes.count ?? 0,
-        pending: pendingRes.count ?? 0,
+        totalPosted: Number(postedRes[0]?.cnt ?? 0),
+        pending: Number(pendingRes[0]?.cnt ?? 0),
         episodes: episodeCount,
         platformCounts,
         recentClips,
-        last14Posts: last14Res.data ?? [],
+        last14Posts: last14Res as typeof last14Res,
       }
     })(),
     fetchZernioMap(),
-    admin.from("settings").select("value").eq("key", "paused").single(),
+    sql`SELECT value FROM settings WHERE key = 'paused' LIMIT 1`,
   ])
 
-  const isPaused = Boolean(pausedRes.data?.value?.paused)
+  const isPaused = Boolean(pausedRows[0]?.value?.paused)
   const monthLabel = new Date().toLocaleDateString("en-GB", { month: "long", year: "numeric" })
 
   // ── Sparkline: posts published per day, last 7 days ──────────────────────

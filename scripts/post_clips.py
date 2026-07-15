@@ -10,12 +10,9 @@ import os
 import sys
 import requests
 from dotenv import load_dotenv
-from supabase import create_client
+from db import create_client
 
 load_dotenv(override=True)
-
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 ZERNIO_API_KEY = os.environ["ZERNIO_API_KEY"]
 ZERNIO_API_KEY_2 = os.environ["ZERNIO_API_KEY_2"]
 INSTAGRAM_ACCOUNT_ID = os.environ["INSTAGRAM_ACCOUNT_ID"]
@@ -252,7 +249,7 @@ def main():
     parser.add_argument("--video_id", default=None, help="Only post clips from this specific video_id")
     args = parser.parse_args()
 
-    supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    supabase_admin = create_client()
 
     # Pause check always runs — not bypassed by --force
     if is_paused(supabase_admin):

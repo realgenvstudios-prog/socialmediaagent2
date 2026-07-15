@@ -28,15 +28,12 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from supabase import create_client
+from db import create_client
 from faster_whisper import WhisperModel
 import anthropic
 
 load_dotenv(override=True)
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 
@@ -895,29 +892,20 @@ def words_for_clip(all_words, clip_start_s, clip_end_s):
     return result
 
 
-def upload_clip(supabase, local_path, storage_path):
-    """Upload to Supabase Storage public bucket, return public URL."""
-    upload_url = f"{SUPABASE_URL}/storage/v1/object/clips/{storage_path}"
-    with open(local_path, "rb") as f:
-        data = f.read()
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "video/mp4",
-        "x-upsert": "true",
-    }
+def upload_clip(db, local_path, storage_path):
+    """Upload clip to Cloudflare R2, return public URL."""
+    bucket = db.storage.from_("clips")
     for attempt in range(5):
         try:
-            resp = requests.post(upload_url, data=data, headers=headers, timeout=300)
-            break
+            with open(local_path, "rb") as f:
+                bucket.upload(storage_path, f, content_type="video/mp4")
+            return bucket.get_public_url(storage_path)
         except Exception as e:
             if attempt == 4:
                 raise
             wait = 15 * (attempt + 1)
             print(f"  Upload attempt {attempt+1} failed ({e.__class__.__name__}), retrying in {wait}s...")
             time.sleep(wait)
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"Upload failed ({resp.status_code}): {resp.text[:300]}")
-    return supabase.storage.from_("clips").get_public_url(storage_path)
 
 
 def queue_clip(supabase, video_id, clip_index, storage_path, public_url, caption, hook, platform):
@@ -1013,15 +1001,15 @@ def main():
     # Retry initial Supabase connection -- DNS can flake briefly on this machine
     for _attempt in range(5):
         try:
-            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+            supabase_admin = create_client()
             supabase_admin.table("video_clip_plans").select("video_id").limit(1).execute()
             break
         except Exception as _e:
             if _attempt == 4:
                 raise
-            print(f"  [Network] Supabase unreachable ({_e.__class__.__name__}), retrying in 15s...")
+            print(f"  [Network] DB unreachable ({_e.__class__.__name__}), retrying in 15s...")
             time.sleep(15)
+    supabase = supabase_admin
 
     anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 

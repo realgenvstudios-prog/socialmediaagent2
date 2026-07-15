@@ -12,12 +12,10 @@ import sys
 import requests
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from supabase import create_client
+from db import create_client
 
 load_dotenv(override=True)
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 ZERNIO_API_KEY = os.environ["ZERNIO_API_KEY"]
 ZERNIO_API_KEY_2 = os.environ["ZERNIO_API_KEY_2"]
 
@@ -91,7 +89,7 @@ def hours_since(posted_at_str):
 
 
 def main():
-    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    supabase = create_client()
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     result = (

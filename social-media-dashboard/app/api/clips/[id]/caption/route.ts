@@ -1,5 +1,5 @@
-import { supabase } from "@/lib/supabase"
 import { NextRequest, NextResponse } from "next/server"
+import sql from "@/lib/db"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -16,7 +16,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Caption must be a string under 500 characters" }, { status: 400 })
   }
 
-  const { error } = await supabase.from("clips").update({ caption }).eq("id", id)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  await sql`UPDATE clip_queue SET caption = ${caption} WHERE id = ${id}::uuid`
   return NextResponse.json({ ok: true })
 }

@@ -18,16 +18,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL      = os.environ["SUPABASE_URL"]
-SUPABASE_KEY      = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ["SUPABASE_KEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 ZERNIO_KEY_1      = os.environ["ZERNIO_API_KEY"]    # instagram + tiktok
 ZERNIO_KEY_2      = os.environ["ZERNIO_API_KEY_2"]  # youtube + facebook
 
 import anthropic
-from supabase import create_client
+from db import create_client
 
-sb     = create_client(SUPABASE_URL, SUPABASE_KEY)
+sb     = create_client()
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 

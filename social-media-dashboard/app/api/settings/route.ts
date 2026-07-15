@@ -1,27 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
-
-const admin = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-)
+import sql from "@/lib/db"
 
 export async function GET() {
-  const { data } = await admin
-    .from("settings")
-    .select("value")
-    .eq("key", "paused")
-    .single()
-
-  return NextResponse.json({ paused: data?.value?.paused ?? false })
+  const rows = await sql`SELECT value FROM settings WHERE key = 'paused' LIMIT 1`
+  return NextResponse.json({ paused: rows[0]?.value?.paused ?? false })
 }
 
 export async function POST(req: NextRequest) {
   const { paused } = await req.json()
-
-  await admin
-    .from("settings")
-    .upsert({ key: "paused", value: { paused: Boolean(paused) } }, { onConflict: "key" })
-
+  await sql`
+    INSERT INTO settings (key, value) VALUES ('paused', ${JSON.stringify({ paused: Boolean(paused) })}::jsonb)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `
   return NextResponse.json({ ok: true, paused: Boolean(paused) })
 }

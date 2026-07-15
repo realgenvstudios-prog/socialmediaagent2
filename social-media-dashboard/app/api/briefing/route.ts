@@ -1,30 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
 import Anthropic from "@anthropic-ai/sdk"
-
-const admin = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!,
-)
+import sql from "@/lib/db"
 
 export async function POST(req: NextRequest) {
   const today = new Date().toISOString().slice(0, 10)
 
-  // Return today's cached briefing if it exists
-  const { data: cached } = await admin
-    .from("settings")
-    .select("value")
-    .eq("key", `briefing_${today}`)
-    .single()
-
-  if (cached?.value?.text) {
-    return NextResponse.json({ text: cached.value.text })
+  const cached = await sql`SELECT value FROM settings WHERE key = ${"briefing_" + today} LIMIT 1`
+  if (cached[0]?.value?.text) {
+    return NextResponse.json({ text: cached[0].value.text })
   }
 
   const body = await req.json()
   const { totalPosted, weekPostCount, episodes, pending, bestThisWeek, platformTrends } = body
 
-  // Strip newlines and prompt-injection markers from any text field injected into the LLM prompt
   const safe = (v: unknown) => String(v ?? "").replace(/[\n\r`]/g, " ").slice(0, 300)
 
   const platformLines = (platformTrends as { platform: string; trend: string; weekAvg: number }[])
@@ -61,13 +49,12 @@ Write the briefing:`
 
   const text = (message.content[0] as { type: string; text: string }).text.trim()
 
-  // Cache for today
-  await admin
-    .from("settings")
-    .upsert(
-      { key: `briefing_${today}`, value: { text, generated_at: new Date().toISOString() } },
-      { onConflict: "key" },
-    )
+  const cacheKey = "briefing_" + today
+  const cacheVal = JSON.stringify({ text, generated_at: new Date().toISOString() })
+  await sql`
+    INSERT INTO settings (key, value) VALUES (${cacheKey}, ${cacheVal}::jsonb)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `
 
   return NextResponse.json({ text })
 }
