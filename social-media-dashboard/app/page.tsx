@@ -216,7 +216,15 @@ export default async function OverviewPage() {
         episodes: episodeCount,
         platformCounts,
         recentClips,
-        last14Posts: last14Res as typeof last14Res,
+        last14Posts: last14Res as unknown as {
+          platform: string
+          posted_at: string | null
+          zernio_post_id: string | null
+          hook: string | null
+          caption: string | null
+          video_id: string
+          clip_index: number
+        }[],
       }
     })(),
     fetchZernioMap(),

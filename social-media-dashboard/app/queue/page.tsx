@@ -49,7 +49,7 @@ async function getEpisodes(): Promise<Episode[]> {
       .order("processed_at", { ascending: false }),
   ])
 
-  const titles = Object.fromEntries((videoData ?? []).map(v => [v.video_id, v.video_title as string]))
+  const titles = Object.fromEntries((videoData ?? []).map((v: any) => [v.video_id, v.video_title as string]))
 
   const clipMap = new Map<string, ClipEntry>()
   for (const row of (queueData ?? [])) {
