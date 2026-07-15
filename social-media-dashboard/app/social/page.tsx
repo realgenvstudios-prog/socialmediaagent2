@@ -105,14 +105,14 @@ async function getData(platform: Platform) {
   ])
 
   return {
-    posts:   postsRaw as Post[],
-    account: (accountRaw[0] ?? {
+    posts:   postsRaw as unknown as Post[],
+    account: ((accountRaw as unknown as AccountRow[])[0] ?? {
       followers: 0, media_count: 0, reach: 0,
       profile_views: 0, accounts_engaged: 0,
       total_interactions: 0, website_clicks: 0,
       prev_followers: null,
     }) as AccountRow,
-    totals:  totalsRaw[0] as Record<string, number>,
+    totals:  (totalsRaw as unknown as Record<string, number>[])[0] ?? {},
   }
 }
 
@@ -127,7 +127,12 @@ export default async function SocialPage({
     : "all"
 
   let posts: Post[] = []
-  let account: AccountRow = { followers: 0, media_count: 0 }
+  let account: AccountRow = {
+    followers: 0, media_count: 0, reach: 0,
+    profile_views: 0, accounts_engaged: 0,
+    total_interactions: 0, website_clicks: 0,
+    prev_followers: null,
+  }
   let totals: Record<string, number> = {}
   let hasData = true
 
