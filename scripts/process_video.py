@@ -471,13 +471,23 @@ CRITICAL: Output ONLY the raw JSON array containing EXACTLY 7 clips. Do not incl
             import time; time.sleep(wait)
 
     raw = raw.strip()
+    if not raw:
+        print("  [Warning] Claude returned empty response — no clips selected.")
+        return []
+
     # Robust extraction: find the outermost JSON array regardless of any surrounding text
     start_idx = raw.find("[")
     end_idx = raw.rfind("]")
-    if start_idx != -1 and end_idx != -1:
-        raw = raw[start_idx:end_idx + 1]
+    if start_idx == -1 or end_idx == -1:
+        print(f"  [Warning] Claude response has no JSON array — skipping. Response: {raw[:300]}")
+        return []
+    raw = raw[start_idx:end_idx + 1]
 
-    clips = json.loads(raw)
+    try:
+        clips = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"  [Warning] Claude JSON parse failed ({e}) — skipping. Raw: {raw[:300]}")
+        return []
     valid = []
     for c in clips:
         duration = c["end_seconds"] - c["start_seconds"]
