@@ -148,10 +148,7 @@ class _Query:
                 vals.append(val)
         return parts, vals
 
-    def execute(self):
-        # Reconnect once if connection was dropped (e.g. after long Whisper run)
-        if self._conn.closed:
-            self._client._ensure_connected()
+    def _do_execute(self):
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         where_parts, where_vals = self._build_where()
         where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
@@ -228,10 +225,24 @@ class _Query:
                 return _Result(data=results)
 
         except Exception:
-            self._conn.rollback()
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             cur.close()
+
+    def execute(self):
+        try:
+            if self._conn.closed:
+                self._client._ensure_connected()
+            return self._do_execute()
+        except psycopg2.InterfaceError:
+            # Connection dropped mid-execute (e.g. after long Whisper run) — reconnect and retry once
+            print("  [db] Connection lost — reconnecting and retrying...")
+            self._client._ensure_connected()
+            return self._do_execute()
 
         return _Result()
 
