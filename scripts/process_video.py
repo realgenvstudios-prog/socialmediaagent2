@@ -1111,6 +1111,22 @@ def main():
                 .select("clip_index", count="exact").eq("video_id", args.video_id).execute()
             total = total_clips.count or len(clips_to_process)
         else:
+            # Duration gate — check before spending any Whisper or Claude credits
+            try:
+                info_proc = subprocess.run(
+                    ["yt-dlp", "--dump-json", "--no-playlist", args.url],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if info_proc.returncode == 0:
+                    duration_s = json.loads(info_proc.stdout).get("duration", 0)
+                    if duration_s and duration_s < 600:
+                        print(f"\n[SKIP] Video is only {int(duration_s)}s — too short for clips (minimum 10 min). Exiting.")
+                        return
+                    if duration_s:
+                        print(f"  Duration: {int(duration_s)//60}m {int(duration_s)%60}s — proceeding")
+            except Exception as _de:
+                print(f"  [Duration check skipped: {_de}]")
+
             # PASS 1: Audio -> Transcript
             segments, words = _load_transcript(supabase_admin, transcript_cache, args.video_id)
 
