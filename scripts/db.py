@@ -235,16 +235,11 @@ class _Query:
 
     def execute(self):
         try:
-            if self._conn.closed:
-                self._client._ensure_connected()
             return self._do_execute()
-        except psycopg2.InterfaceError:
-            # Connection dropped mid-execute (e.g. after long Whisper run) — reconnect and retry once
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
             print("  [db] Connection lost — reconnecting and retrying...")
-            self._client._ensure_connected()
+            self._client._conn = self._client._connect()
             return self._do_execute()
-
-        return _Result()
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────
