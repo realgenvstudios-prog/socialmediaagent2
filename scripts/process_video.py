@@ -347,7 +347,13 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
 
 ━━━ CLIP SELECTION RULES ━━━
 
-1. CHRONOLOGICAL SYSTEMATIC REVIEW — Read through the entire transcript from start to finish. Do not ignore the middle sections. Distribute your selections evenly across the entire runtime. Do not cluster clips in a single high-energy segment. IMPORTANT: The opening 2–3 minutes of a podcast is typically an intro montage — rapid jump cuts between unrelated moments designed to tease the full episode. These make no sense as standalone clips. Use your judgment to identify and skip this intro section; look for where the hosts settle into the actual conversation (usually when they introduce themselves or the guest properly) and start your selections from there.
+1. CHRONOLOGICAL SYSTEMATIC REVIEW — Read through the entire transcript from start to finish. Do not ignore the middle sections. Distribute your selections evenly across the entire runtime. Do not cluster clips in a single high-energy segment.
+
+  TWO SECTIONS TO ALWAYS SKIP — these are not genuine conversation and must never be clipped:
+
+  A) INTRO MONTAGE: Podcasts typically open with an edited highlight reel — rapid jump cuts between unrelated moments designed to tease the episode. These fragments are taken out of context and make no sense as standalone clips. Identify where the actual conversation begins (usually when the host greets the guest or introduces themselves properly) and only select clips from that point onward.
+
+  B) AD READS / SPONSOR SEGMENTS: These are moments where the host pauses the conversation to promote a product or service. Identifying markers include phrases like "this episode is brought to you by", "our sponsor", "speaking of which", "use code", "link in bio", "check out", "sign up at", "download", "discount", or any mention of a brand deal. These are paid interruptions — not authentic content. Never clip them regardless of how naturally the host delivers them.
 
 2. TARGET LENGTH — Target 45 to 65 seconds per clip. This is the proven sweet spot for completion rate across all 4 platforms. Never go below 30 seconds or above 90 seconds. Tighter is better. The clip must start precisely on the opening word of the hook and end the moment the idea concludes — do not trail off into the next topic or filler.
 
@@ -361,12 +367,14 @@ Each line shows [MM:SS-MM:SS] start-end time for that segment, followed by the s
   • A story opening with immediate tension ("The day I fired my best friend was the day the business started growing")
   • A question with an answer the viewer desperately wants ("Why do the most disciplined people still fail?")
 
-  AUTOMATIC REJECTION — Never start a clip on:
-  • Filler words: "So...", "Um...", "You know...", "Like I said...", "Basically..."
-  • Slow context: "Today we're going to talk about...", "I want to tell you something about..."
-  • Generic advice that could apply to anyone: "You need to believe in yourself", "Hard work pays off"
-  • A mid-thought that requires the previous sentence to make sense
-  • A compliment or pleasantry: "That's a great question", "Absolutely, I agree"
+  AUTOMATIC REJECTION — Never select a clip that:
+  • Is part of the intro montage (see Rule 1A above)
+  • Is part of an ad read or sponsor segment (see Rule 1B above)
+  • Starts on filler words: "So...", "Um...", "You know...", "Like I said...", "Basically..."
+  • Starts on slow context: "Today we're going to talk about...", "I want to tell you something about..."
+  • Contains generic advice that could apply to anyone: "You need to believe in yourself", "Hard work pays off"
+  • Starts on a mid-thought that requires the previous sentence to make sense
+  • Starts on a compliment or pleasantry: "That's a great question", "Absolutely, I agree"
 
 4. THE STRONG ENDING TEST — A clip is only as good as its ending. Before finalising any clip, apply this test to its closing moment: would a viewer who just finished watching feel satisfied, provoked, or compelled to rewatch?
 
