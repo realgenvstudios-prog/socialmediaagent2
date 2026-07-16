@@ -711,16 +711,16 @@ def _compute_speaker_crop_path(video_path: str, start_s: float, duration: float,
 
 def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path, clip_idx, tmpdir, chunk_size=3, hook=""):
     """
-    Render a single clip with blur-background 9:16 framing.
+    Render a clip: face-tracked full-screen 9:16 crop + karaoke subtitles.
 
     Pipeline:
-      1. Extract raw frames from source via ffmpeg
-      2. Per frame: scale source to cover 1080x1920 + blur (background),
-         scale source to fit width (foreground), center fg on blurred bg
-      3. Overlay logo and karaoke subtitles
-      4. Encode frames + audio in a single pass
+      1. Compute per-frame face-tracked crop boxes via _compute_speaker_crop_path
+      2. Extract raw frames from source via ffmpeg
+      3. Pre-render karaoke subtitle images (active word yellow, others dimmed)
+      4. Per frame: apply crop -> scale to 1080x1920 -> bottom gradient -> logo -> subtitle
+      5. Encode frames + audio in a single pass
     """
-    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    from PIL import Image, ImageDraw, ImageFont
 
     W, H = 1080, 1920
 
@@ -736,7 +736,6 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     except Exception:
         fps = 30.0
 
-    # Audio: cut low rumble, boost voice presence, normalise to -14 LUFS
     audio_filter = (
         "highpass=f=80,"
         "equalizer=f=300:width_type=o:width=1:g=-3,"
@@ -744,52 +743,54 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
         "loudnorm=I=-14:TP=-1:LRA=11"
     )
 
-    # ── 1. Extract raw frames ────────────────────────────────────────────────
+    # ── 1. Face-tracked crop path ─────────────────────────────────────────────
+    # Returns one (x, y, crop_w, crop_h) tuple per output frame.
+    # MediaPipe detects faces, EMA smoothing locks to dominant speaker.
+    crop_path = _compute_speaker_crop_path(section_path, offset_seconds, duration, fps)
+
+    # ── 2. Extract raw frames ─────────────────────────────────────────────────
     frames_dir = os.path.join(tmpdir, f"frames_{clip_idx}")
     os.makedirs(frames_dir, exist_ok=True)
     subprocess.run([
-        "ffmpeg",
-        "-ss", str(offset_seconds), "-i", section_path,
+        "ffmpeg", "-ss", str(offset_seconds), "-i", section_path,
         "-t", str(duration),
         os.path.join(frames_dir, "frame_%06d.png"), "-y",
     ], check=True, capture_output=True)
 
-    # ── 3. Pre-render subtitle images ────────────────────────────────────────
-    subtitle_data = []   # list of (start_sec, end_sec, PIL Image, x, y)
+    # ── 3. Pre-render karaoke subtitle images ─────────────────────────────────
+    # One RGBA image per word. Active word = bright yellow + thick stroke.
+    # Other words in the same chunk = dim white + thin stroke. No box.
+    subtitle_data = []   # (start_sec, end_sec, PIL Image, paste_x, paste_y)
     if words:
-        base_font_size = max(52, H // 16)
+        font_size = max(80, H // 13)
         font_candidates = [
-            "/Library/Fonts/SF-Pro-Display-Bold.otf",
-            "/Library/Fonts/SF-Pro.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/System/Library/Fonts/SFNS.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+            "/Library/Fonts/SF-Pro-Display-Bold.otf",
+            "/System/Library/Fonts/Helvetica.ttc",
         ]
-        font_path = next((p for p in font_candidates if os.path.exists(p)), None)
+        font_path  = next((p for p in font_candidates if os.path.exists(p)), None)
+        max_text_w = int(W * 0.88)
+        sub_bottom = int(H * 0.86)   # bottom edge of subtitle zone
 
-        tmp_draw   = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        max_text_w = int(W * 0.82)
-        pad_h, pad_v, radius = 22, 14, 10
-        text_color = (15, 15, 15, 255)
-        box_color  = (255, 255, 255, 235)
-        max_sub_h  = base_font_size + 2 * pad_v
-        sub_y      = int(H * 0.65) - max_sub_h
+        tmp_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
 
         for ci in range(0, len(words), chunk_size):
             chunk = words[ci:ci + chunk_size]
             if not chunk:
                 continue
 
-            chunk_texts = [wd["word"].strip() for wd in chunk]
-            if chunk_texts:
-                chunk_texts[0] = chunk_texts[0][:1].upper() + chunk_texts[0][1:]
-            full_text = " ".join(chunk_texts)
+            wtexts = [wd["word"].strip() for wd in chunk]
+            if wtexts:
+                wtexts[0] = wtexts[0][:1].upper() + wtexts[0][1:]
+            full_text = " ".join(wtexts)
 
-            # Find the largest font size that fits the full chunk text
-            size = base_font_size
+            # Largest font size that fits within max_text_w
+            size = font_size
             font = None
-            while size >= 28:
+            while size >= 36:
                 try:
                     font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
                 except Exception:
@@ -804,22 +805,45 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
             bb     = tmp_draw.textbbox((0, 0), full_text, font=font)
             text_w = bb[2] - bb[0]
             text_h = bb[3] - bb[1]
-            img_w  = text_w + 2 * pad_h
-            img_h  = text_h + 2 * pad_v
-            x_pos  = max(10, (W - img_w) // 2)
 
-            # One subtitle image per word -- same white box, advances word by word
-            for word in chunk:
+            # X offset of each word within the rendered line.
+            # Build by measuring prefix + space before each word.
+            word_x = []
+            for i in range(len(wtexts)):
+                if i == 0:
+                    word_x.append(0)
+                else:
+                    prefix = " ".join(wtexts[:i]) + " "
+                    pb = tmp_draw.textbbox((0, 0), prefix, font=font)
+                    word_x.append(pb[2] - pb[0])
+
+            pad     = 20
+            img_w   = text_w + 2 * pad
+            img_h   = text_h + 2 * pad
+            paste_x = max(0, (W - img_w) // 2)
+            paste_y = sub_bottom - img_h
+
+            for wi, word in enumerate(chunk):
                 img  = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(img)
-                draw.rounded_rectangle([(0, 0), (img_w - 1, img_h - 1)],
-                                       radius=radius, fill=box_color)
-                draw.text((pad_h, pad_v - bb[1]), full_text, font=font, fill=text_color)
-                subtitle_data.append((word["start"], word["end"], img, x_pos, sub_y))
+                ox   = pad - bb[0]
+                oy   = pad - bb[1]
+
+                for i, wt in enumerate(wtexts):
+                    wx        = word_x[i] + ox
+                    is_active = (i == wi)
+                    fill      = (255, 220, 0, 255)   if is_active else (220, 220, 220, 170)
+                    stroke_w  = 4                    if is_active else 2
+                    draw.text(
+                        (wx, oy), wt, font=font, fill=fill,
+                        stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255),
+                    )
+
+                subtitle_data.append((word["start"], word["end"], img, paste_x, paste_y))
 
     # ── 4. Load logo ──────────────────────────────────────────────────────────
     logo_img = None
-    logo_w   = max(160, W // 4)
+    logo_w   = max(160, W // 5)
     try:
         logo_img = Image.open(LOGO_PATH).convert("RGBA")
         lh       = int(logo_img.height * logo_w / logo_img.width)
@@ -827,55 +851,47 @@ def cut_and_subtitle(section_path, offset_seconds, duration, words, output_path,
     except Exception:
         pass
 
-    # ── 5. Process each frame: blur-bg composite -> overlays ─────────────────
+    # ── 5. Pre-compute bottom gradient (improves subtitle readability) ─────────
+    # Dark vignette from 58% height to bottom. Created once, composited per frame.
+    grad_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    grad_draw    = ImageDraw.Draw(grad_overlay)
+    grad_start   = int(H * 0.58)
+    for gy in range(grad_start, H):
+        alpha = int(150 * (gy - grad_start) / (H - grad_start))
+        grad_draw.line([(0, gy), (W - 1, gy)], fill=(0, 0, 0, alpha))
+
+    # ── 6. Render each frame ──────────────────────────────────────────────────
     frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
     for fi, fname in enumerate(frame_files):
         fp        = os.path.join(frames_dir, fname)
         frame_img = Image.open(fp).convert("RGB")
-        fw, fh    = frame_img.size
 
-        # Blurred background: scale to cover full 1080x1920 canvas, then blur
-        bg_scale = max(W / fw, H / fh)
-        bg = frame_img.resize((int(fw * bg_scale), int(fh * bg_scale)), Image.LANCZOS)
-        bw, bh = bg.size
-        bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=25))
+        # Apply face-tracked crop -> scale to fill 1080x1920 exactly
+        crop_idx       = min(fi, len(crop_path) - 1)
+        cx, cy, cw, ch = crop_path[crop_idx]
+        cropped        = frame_img.crop((cx, cy, cx + cw, cy + ch))
+        output         = cropped.resize((W, H), Image.LANCZOS).convert("RGBA")
 
-        # Foreground: scale to fill 50% of canvas height, center-crop to canvas width
-        # Bars become ~25% each (down from ~34% with fit-width)
-        fg_h = H // 2
-        fg_w = int(fw * fg_h / fh)
-        fg   = frame_img.resize((fg_w, fg_h), Image.LANCZOS)
-        if fg_w > W:
-            cx = (fg_w - W) // 2
-            fg = fg.crop((cx, 0, cx + W, fg_h))
-        fg = fg.filter(ImageFilter.UnsharpMask(radius=1.5, percent=80, threshold=3))
+        # Bottom gradient so subtitles are always legible over the video
+        output = Image.alpha_composite(output, grad_overlay)
 
-        # Center fg vertically on the blurred bg
-        paste_y = (H - fg_h) // 2
-        output  = bg.copy()
-        output.paste(fg, (0, paste_y))
-
-        # Convert to RGBA for alpha compositing
-        output = output.convert("RGBA")
-
-        # Paste logo (top-left area, well above subtitle zone)
+        # Logo top-left
         if logo_img is not None:
-            output.paste(logo_img, (120, 160), logo_img)
+            output.paste(logo_img, (60, 120), logo_img)
 
-        # Paste active subtitle
-        t          = fi / fps
-        active_sub = next(
+        # Karaoke subtitle for this timestamp
+        t      = fi / fps
+        active = next(
             ((si, sx, sy) for s, e, si, sx, sy in subtitle_data if s <= t < e),
             None,
         )
-        if active_sub is not None:
-            sub_img, sx, sy = active_sub
+        if active is not None:
+            sub_img, sx, sy = active
             output.paste(sub_img, (sx, sy), sub_img)
 
         output.convert("RGB").save(fp)
 
-    # ── 6. Single encode pass: frames + audio ─────────────────────────────────
+    # ── 7. Encode frames + audio in a single pass ─────────────────────────────
     subprocess.run([
         "ffmpeg",
         "-framerate", str(fps),
