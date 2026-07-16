@@ -51,10 +51,6 @@ class _Query:
     def __init__(self, client, table):
         self._client = client
         self._table = table
-
-    @property
-    def _conn(self):
-        return self._client._conn
         self._where = []
         self._cols = "*"
         self._order_col = None
@@ -67,6 +63,10 @@ class _Query:
         self._count_also = False
         self._single_row = False
         self.not_ = _NotProxy(self)
+
+    @property
+    def _conn(self):
+        return self._client._conn
 
     def select(self, *cols, count=None, head=False):
         self._op = "select"
