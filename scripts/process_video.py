@@ -627,18 +627,42 @@ def _compute_speaker_crop_path(video_path: str, start_s: float, duration: float,
               f"(crop {crop_w}x{crop_h} from {frame_w}x{frame_h})")
 
         # ── Cluster to dominant speaker ───────────────────────────────────────
-        # In a two-person podcast MediaPipe alternates between left and right faces.
-        # Split detections by which horizontal half they land in, pick the majority.
-        # This locks the crop to ONE speaker for the whole clip.
+        # Groups face detections by horizontal proximity to handle 2, 3, or more
+        # people. Each cluster represents one speaker position. The largest cluster
+        # (most detections) wins -- that's the dominant speaker for this clip.
         raw_cx = np.full(n_frames, float(frame_w // 2), dtype=np.float64)
 
         if detections:
-            mid        = frame_w / 2
-            left_dets  = {fi: cx for fi, cx in detections.items() if cx <  mid}
-            right_dets = {fi: cx for fi, cx in detections.items() if cx >= mid}
-            primary    = left_dets if len(left_dets) >= len(right_dets) else right_dets
-            dom_side   = "left"    if len(left_dets) >= len(right_dets) else "right"
-            print(f"  [FaceTrack] dominant speaker: {dom_side}  "
+            # Proximity threshold: faces within frame_w/5 of each other are the
+            # same person. At 1280px wide that's ~256px -- wide enough to survive
+            # head movement but narrow enough to separate 3 seated speakers.
+            gap        = frame_w // 5
+            cx_vals    = sorted(detections.values())
+
+            # Single-pass proximity clustering (O(n), stable insertion order)
+            clusters   = [[cx_vals[0]]]
+            for cx in cx_vals[1:]:
+                if cx - clusters[-1][-1] <= gap:
+                    clusters[-1].append(cx)
+                else:
+                    clusters.append([cx])
+
+            # Centre of each cluster
+            cluster_cx = [int(sum(c) / len(c)) for c in clusters]
+
+            # Count how many detected frames fall into each cluster
+            cluster_counts = [0] * len(clusters)
+            for cx in cx_vals:
+                best = min(range(len(cluster_cx)), key=lambda i: abs(cx - cluster_cx[i]))
+                cluster_counts[best] += 1
+
+            # Dominant cluster = most detections
+            dom_i    = cluster_counts.index(max(cluster_counts))
+            dom_cx_t = cluster_cx[dom_i]
+            primary  = {fi: cx for fi, cx in detections.items()
+                        if abs(cx - dom_cx_t) <= gap}
+            print(f"  [FaceTrack] {len(clusters)} speaker cluster(s) found  "
+                  f"dominant cx≈{dom_cx_t}  "
                   f"({len(primary)}/{len(detections)} detections kept)")
 
             if primary:
