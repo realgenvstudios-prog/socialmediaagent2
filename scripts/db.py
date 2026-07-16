@@ -48,9 +48,13 @@ class _NotProxy:
 # ── Query builder ─────────────────────────────────────────────────────────────
 
 class _Query:
-    def __init__(self, conn, table):
-        self._conn = conn
+    def __init__(self, client, table):
+        self._client = client
         self._table = table
+
+    @property
+    def _conn(self):
+        return self._client._conn
         self._where = []
         self._cols = "*"
         self._order_col = None
@@ -145,6 +149,9 @@ class _Query:
         return parts, vals
 
     def execute(self):
+        # Reconnect once if connection was dropped (e.g. after long Whisper run)
+        if self._conn.closed:
+            self._client._ensure_connected()
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         where_parts, where_vals = self._build_where()
         where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
@@ -266,12 +273,29 @@ class _Storage:
 
 class _Client:
     def __init__(self, database_url, r2=None, r2_public_url=None):
-        self._conn = psycopg2.connect(database_url)
+        self._database_url = database_url
+        self._conn = self._connect()
         if r2:
             self.storage = _Storage(r2, r2_public_url or "")
 
+    def _connect(self):
+        # TCP keepalives keep the connection alive during long Whisper transcriptions
+        return psycopg2.connect(
+            self._database_url,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
+        )
+
+    def _ensure_connected(self):
+        if self._conn.closed:
+            print("  [db] Connection was closed — reconnecting...")
+            self._conn = self._connect()
+
     def table(self, name):
-        return _Query(self._conn, name)
+        self._ensure_connected()
+        return _Query(self, name)
 
 
 def _make_r2():
